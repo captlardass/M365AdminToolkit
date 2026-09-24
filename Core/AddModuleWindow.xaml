@@ -1,0 +1,97 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add module" Width="780" Height="760" MinWidth="620" MinHeight="520"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="CanResizeWithGrip"
+        Background="#F3F4F6" FontFamily="Segoe UI" FontSize="13">
+    <DockPanel Margin="14">
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <Button x:Name="CancelDialogButton" DockPanel.Dock="Right" Content="Cancel" IsCancel="True"/>
+            <Button x:Name="CreateButton" DockPanel.Dock="Right" Content="Add module" Style="{StaticResource Primary}"/>
+            <TextBlock x:Name="DialogStatus" Foreground="#B91C1C" TextWrapping="Wrap" VerticalAlignment="Center"/>
+        </DockPanel>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="0,0,6,0">
+                <!-- 1. Script -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="1. Script" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}"
+                                   Text="Pick an existing .ps1. It is read, not run: its param() block becomes the input form. Leave empty to start from the blank template."/>
+                        <DockPanel Margin="0,8,0,0">
+                            <Button x:Name="ViewSourceButton" DockPanel.Dock="Right" Content="View script" IsEnabled="False"
+                                    ToolTip="Read the whole script before adding it"/>
+                            <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="Browse..."/>
+                            <TextBox x:Name="ScriptPathBox" Padding="4,3"/>
+                        </DockPanel>
+                        <TextBlock x:Name="AnalysisSummary" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="WarningText" Foreground="#B45309" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        <DataGrid x:Name="ParamGrid" AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False"
+                                  HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#E5E7EB"
+                                  MaxHeight="170" Margin="0,8,0,0" Visibility="Collapsed"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- 2. Details -->
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="110"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="2. Details" Style="{StaticResource SectionTitle}"/>
+
+                        <TextBlock Grid.Row="1" Text="Name *" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                        <TextBox Grid.Row="1" Grid.Column="1" x:Name="NameBox" Padding="4,3" Margin="0,6,0,0"/>
+
+                        <TextBlock Grid.Row="2" Text="Category *" VerticalAlignment="Center" Margin="0,6,0,0"/>
+                        <ComboBox Grid.Row="2" Grid.Column="1" x:Name="CategoryBox" IsEditable="True" Margin="0,6,0,0"
+                                  ToolTip="Pick an existing category or type a new one"/>
+
+                        <TextBlock Grid.Row="3" Text="Id *" VerticalAlignment="Top" Margin="0,10,0,0"/>
+                        <StackPanel Grid.Row="3" Grid.Column="1" Margin="0,6,0,0">
+                            <TextBox x:Name="IdBox" Padding="4,3" FontFamily="Consolas"/>
+                            <TextBlock Style="{StaticResource Hint}" Text="Area.TaskName - suggested from category and name. Also the folder name."/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="4" Text="Tags" VerticalAlignment="Top" Margin="0,10,0,0"/>
+                        <StackPanel Grid.Row="4" Grid.Column="1" Margin="0,6,0,0">
+                            <TextBox x:Name="TagsBox" Padding="4,3"/>
+                            <TextBlock Style="{StaticResource Hint}" Text="Comma-separated. Click an existing tag to add or remove it:" Margin="0,2,0,4"/>
+                            <WrapPanel x:Name="ExistingTagsPanel"/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="5" Text="Description" VerticalAlignment="Top" Margin="0,10,0,0"/>
+                        <TextBox Grid.Row="5" Grid.Column="1" x:Name="DescriptionBox" Padding="4,3" Margin="0,6,0,0"
+                                 Height="60" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+                    </Grid>
+                </Border>
+
+                <!-- 3. Connections -->
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <StackPanel>
+                        <TextBlock Text="3. Connections" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource Hint}" Text="The toolkit signs in to these before the script runs. Pre-filled from what the script uses - check them."/>
+                        <CheckBox x:Name="ExchangeCheck" Content="Exchange Online" Margin="0,8,0,0"/>
+                        <TextBlock Text="Microsoft Graph scopes" Margin="0,8,0,2"/>
+                        <TextBox x:Name="GraphScopesBox" Padding="4,3" FontFamily="Consolas"/>
+                        <TextBlock Style="{StaticResource Hint}" Text="Comma-separated delegated scopes, e.g. User.Read.All, AuditLog.Read.All. Empty = no Graph."/>
+                        <CheckBox x:Name="ReadOnlyCheck" Margin="0,12,0,0"
+                                  Content="Read-only module - the toolkit blocks any Microsoft 365 change, even on real runs"/>
+                        <TextBlock Style="{StaticResource Hint}" Margin="20,2,0,0"
+                                   Text="Pre-ticked when the script appears to only read. Every module also gets a dry-run option either way."/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

@@ -1,0 +1,13 @@
+{
+  "_comment": "Copy to settings.json to use it. Leave values empty for interactive sign-in. Certificate auth only - never put client secrets in this file.",
+  "Graph": {
+    "TenantId": "",
+    "ClientId": "",
+    "CertificateThumbprint": ""
+  },
+  "ExchangeOnline": {
+    "Organization": "",
+    "AppId": "",
+    "CertificateThumbprint": ""
+  }
+}

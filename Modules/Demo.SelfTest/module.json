@@ -1,0 +1,22 @@
+{
+  "Id": "Demo.SelfTest",
+  "Name": "Toolkit self-test",
+  "Category": "Toolkit",
+  "Tags": ["Testing"],
+  "Description": "Generates dummy results without touching any tenant. Use it to check that the GUI, logging, dry-run, cancel and CSV export all work.",
+  "Version": "1.0.0",
+  "Author": "M365 Admin Toolkit",
+  "EntryPoint": "module.ps1",
+  "SupportsWhatIf": true,
+  "Requires": {
+    "ExchangeOnline": false,
+    "GraphScopes": []
+  },
+  "Parameters": [
+    { "Name": "Count", "Label": "Number of sample rows", "Type": "Int", "Default": 8, "HelpText": "Each row takes ~0.3 s, so you can try Cancel." },
+    { "Name": "Prefix", "Label": "Name prefix", "Type": "String", "Default": "demo" },
+    { "Name": "Department", "Label": "Department", "Type": "Choice", "Options": ["IT", "Finance", "Sales"], "Default": "IT" },
+    { "Name": "EmitWarning", "Label": "Warnings", "Type": "Bool", "Default": true, "HelpText": "Write a sample warning to the log" },
+    { "Name": "Fail", "Label": "Failure", "Type": "Bool", "Default": false, "HelpText": "Throw an error at the end to see how failures look" }
+  ]
+}

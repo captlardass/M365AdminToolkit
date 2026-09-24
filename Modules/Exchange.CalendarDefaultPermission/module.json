@@ -1,0 +1,21 @@
+{
+  "Id": "Exchange.CalendarDefaultPermission",
+  "Name": "Set default calendar permission",
+  "Category": "Exchange Online",
+  "Tags": ["Calendar", "Permissions", "Bulk change"],
+  "Description": "Sets the 'Default' (everyone in the organisation) or 'Anonymous' permission on mailboxes' primary calendar - for example LimitedDetails so colleagues see subjects and locations. Not available in the Exchange admin center. Finds the calendar by folder type, so localised names like 'Kalender' work.",
+  "Version": "1.0.0",
+  "Author": "M365 Admin Toolkit",
+  "EntryPoint": "module.ps1",
+  "SupportsWhatIf": true,
+  "Requires": {
+    "ExchangeOnline": true,
+    "GraphScopes": []
+  },
+  "Parameters": [
+    { "Name": "Mailboxes", "Label": "Mailboxes", "Type": "List", "HelpText": "One UPN, alias or email address per line. Leave empty if 'All user mailboxes' is ticked." },
+    { "Name": "AllUserMailboxes", "Label": "Scope", "Type": "Bool", "Default": false, "HelpText": "All user mailboxes (ignores the list above)" },
+    { "Name": "User", "Label": "Permission entry", "Type": "Choice", "Options": ["Default", "Anonymous"], "Default": "Default" },
+    { "Name": "AccessRights", "Label": "Access rights", "Type": "Choice", "Options": ["None", "AvailabilityOnly", "LimitedDetails", "Reviewer", "Editor"], "Default": "LimitedDetails", "HelpText": "AvailabilityOnly = free/busy, LimitedDetails = + subject and location, Reviewer = full read." }
+  ]
+}

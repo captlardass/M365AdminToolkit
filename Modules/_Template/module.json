@@ -1,0 +1,20 @@
+{
+  "Id": "Area.TaskName",
+  "Name": "Human friendly name",
+  "Category": "Exchange Online",
+  "Tags": [],
+  "Description": "What this does, and why it cannot be done in the admin center.",
+  "Version": "0.1.0",
+  "Author": "",
+  "EntryPoint": "module.ps1",
+  "SupportsWhatIf": true,
+  "ReadOnly": false,
+  "Requires": {
+    "ExchangeOnline": false,
+    "GraphScopes": []
+  },
+  "Parameters": [
+    { "Name": "Identities", "Label": "Users", "Type": "List", "Required": true, "HelpText": "One UPN per line." },
+    { "Name": "Mode", "Label": "Mode", "Type": "Choice", "Options": ["Report", "Fix"], "Default": "Report" }
+  ]
+}
