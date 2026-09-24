@@ -7,6 +7,7 @@
   "Author": "M365 Admin Toolkit",
   "EntryPoint": "module.ps1",
   "SupportsWhatIf": false,
+  "ReadOnly": true,
   "Requires": {
     "ExchangeOnline": false,
     "GraphScopes": ["Group.Read.All"]
