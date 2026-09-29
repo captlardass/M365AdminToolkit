@@ -1,0 +1,55 @@
+﻿{
+  "Id": "Custom.GetPasskeyRegistrationStatus",
+  "Name": "Get passkey registration status",
+  "Category": "Custom",
+  "Tags": [],
+  "Description": "Lists which users have registered a passkey (FIDO2) as an authentication method, and which have not.",
+  "Version": "1.0.0",
+  "Author": "",
+  "EntryPoint": "module.ps1",
+  "SupportsWhatIf": false,
+  "ReadOnly": true,
+  "Requires": {
+    "ExchangeOnline": false,
+    "GraphScopes": ["User.Read.All", "UserAuthenticationMethod.Read.All", "AuditLog.Read.All"]
+  },
+  "Parameters": [
+    {
+      "Name": "Mode",
+      "Label": "Mode",
+      "Type": "Choice",
+      "Default": "Live",
+      "Options": [
+        "Live",
+        "Report"
+      ],
+      "HelpText": "Live reads each user's passkeys directly. Report uses the registration report (needs Entra ID P1/P2)."
+    },
+    {
+      "Name": "Show",
+      "Label": "Show",
+      "Type": "Choice",
+      "Default": "All",
+      "Options": [
+        "All",
+        "Registered",
+        "NotRegistered"
+      ],
+      "HelpText": "Which users to return: All, Registered or NotRegistered. Users that could not be checked are always returned."
+    },
+    {
+      "Name": "IncludeGuests",
+      "Label": "Include guests",
+      "Type": "Bool",
+      "Default": false,
+      "HelpText": "Include guest (B2B) accounts. By default only member accounts are checked."
+    },
+    {
+      "Name": "IncludeDisabled",
+      "Label": "Include disabled",
+      "Type": "Bool",
+      "Default": false,
+      "HelpText": "Include disabled accounts. By default only enabled accounts are checked."
+    }
+  ]
+}
