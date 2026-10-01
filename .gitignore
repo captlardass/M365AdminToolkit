@@ -1,3 +1,8 @@
 Config/settings.json
 Logs/
 *.csv
+
+# Your own modules stay on this PC; only the samples are shared.
+Modules/*
+!Modules/_Template/
+!Modules/Demo.SelfTest/

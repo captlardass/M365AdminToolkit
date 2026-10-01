@@ -42,16 +42,32 @@ input form, a results grid, CSV export and a safe dry run.
 
 ## Installation
 
-1. **Get the files.** Clone the repository or download it and extract it to a folder, for example
-   `C:\Tools\M365AdminToolkit`.
+1. **Get the files.** Clone the repository, or download the ZIP and extract it.
 
-2. **Unblock the files** if you downloaded a ZIP. Windows marks internet files as blocked:
+2. **Install it.** Double-click **`Install-Toolkit.cmd`**. No admin rights are needed. The installer:
+   - copies the toolkit to `%LOCALAPPDATA%\Programs\M365AdminToolkit` and unblocks the files
+   - adds **M365 Admin Toolkit** to the Start menu and the desktop
+   - adds an uninstall entry under *Settings > Apps*
+
+   From PowerShell you can choose the folder or skip the desktop shortcut:
 
    ```powershell
-   Get-ChildItem -Path 'C:\Tools\M365AdminToolkit' -Recurse | Unblock-File
+   .\Install-Toolkit.ps1                                   # Start menu shortcut only
+   .\Install-Toolkit.ps1 -DesktopShortcut -Destination D:\Tools\M365AdminToolkit
+   .\Install-Toolkit.ps1 -Portable -Destination E:\M365AdminToolkit   # files only, e.g. on a USB stick
    ```
 
-3. **Install the service modules** for your user. No admin rights are needed:
+   **To upgrade**, run the installer again from a newer copy. Core files are replaced. Modules you created or
+   edited in the installed copy are kept, and so are `Config\settings.json` and the logs.
+
+   **To uninstall**, use *Settings > Apps*, or run `.\Install-Toolkit.ps1 -Uninstall`. Your modules, settings
+   and logs stay in the folder unless you add `-RemoveUserData`.
+
+   You can also skip the installer and run the toolkit straight from the extracted folder (see below). In that
+   case, unblock a downloaded ZIP first: `Get-ChildItem -Recurse | Unblock-File`.
+
+3. **Install the service modules** for your user. No admin rights are needed. The toolkit's *Installed modules*
+   tab can do this for you, or run:
 
    ```powershell
    Install-Module Microsoft.Graph.Authentication, ExchangeOnlineManagement -Scope CurrentUser
@@ -63,7 +79,8 @@ input form, a results grid, CSV export and a safe dry run.
 
 ## Running the toolkit
 
-Double-click **`Start-Toolkit.cmd`**, or start it from PowerShell:
+Open **M365 Admin Toolkit** from the Start menu if you installed it. Otherwise double-click
+**`Start-Toolkit.cmd`**, or start it from PowerShell:
 
 ```powershell
 powershell.exe -STA -File .\Start-Toolkit.ps1
@@ -119,12 +136,15 @@ and only updates those. A version mismatch always brings `Microsoft.Graph.Authen
 
 ## Included modules
 
+The repository only includes the samples. Everything else in `Modules\` is git-ignored, so your own scripts
+stay on your PC.
+
 | Module | Category | What it does |
 |---|---|---|
-| Dynamic groups using memberOf | Entra ID | Finds dynamic groups whose rule uses `memberOf`, and the groups each rule points to. Read-only |
-| Stale guest accounts report | Entra ID | Lists guests with no sign-in for N days, including ones that never redeemed their invitation. Read-only |
-| Set default calendar permission | Exchange Online | Sets the *Default* or *Anonymous* permission on mailbox calendars, e.g. LimitedDetails. Supports dry run |
 | Toolkit self-test | Toolkit | Generates dummy results without touching a tenant, to check the GUI, dry run, cancel and CSV export |
+| `_Template` | - | The blank module that *+ Add module* and `New-ToolkitModule.ps1` start from |
+
+To share a module after all, add it to the exceptions in `.gitignore` (`!Modules/<Id>/`).
 
 ## Adding your own scripts
 

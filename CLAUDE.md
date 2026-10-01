@@ -15,6 +15,12 @@ Read README.md for the architecture and the module contract.
 - Log with Write-Information/Write-Warning; never Read-Host or other prompts.
 - Always finish with `.\Tools\Test-ToolkitModules.ps1 -IncludeTemplate` (must exit 0).
 - Modules in `Modules/` may be the user's own work - don't edit ones you didn't create unless asked.
+- `Modules/` is git-ignored except `_Template` and `Demo.SelfTest`: the user's modules stay private. Never un-ignore or `git add -f` them.
+
+## Installer
+- `Install-Toolkit.ps1` keeps a `$programItems` list (replaced on upgrade, removed on uninstall). Add new top-level program files or folders there; anything not listed is treated as user data.
+- Upgrades must never overwrite `Config/settings.json`, `Logs/` or newer module files in the installed copy.
+- Test it only with `-Portable` into a temp folder (Tests/Installer.Tests.ps1); a normal install writes Start menu shortcuts and an HKCU uninstall key.
 
 ## Code rules
 - Keep `.ps1`/`.psm1` files ASCII-only: Windows PowerShell 5.1 reads BOM-less files as ANSI. Use `[char]0x2605` etc. for symbols.

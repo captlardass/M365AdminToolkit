@@ -146,7 +146,7 @@ $errors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile("$Root\Start-Toolkit.ps1", [ref]$null, [ref]$errors)
 Check 'Start-Toolkit.ps1 parses' (-not $errors.Count) (@($errors | ForEach-Object Message) -join '; ')
 # Without a BOM, Windows PowerShell 5.1 reads a file as ANSI, so non-ASCII bytes there get garbled.
-$scripts = @(Get-ChildItem "$Root\Core", "$Root\Tests", "$Root\Tools" -Include *.ps1, *.psm1 -Recurse) + @(Get-Item "$Root\Start-Toolkit.ps1")
+$scripts = @(Get-ChildItem "$Root\Core", "$Root\Tests", "$Root\Tools" -Include *.ps1, *.psm1 -Recurse) + @(Get-Item "$Root\Start-Toolkit.ps1", "$Root\Install-Toolkit.ps1")
 $nonAscii = @($scripts | Where-Object {
     $bytes = [IO.File]::ReadAllBytes($_.FullName)
     $hasBom = $bytes.Count -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
