@@ -34,9 +34,9 @@ Import-Module (Join-Path $PSScriptRoot 'Core\Toolkit.Core.psm1') -Force
 $settingsPath = Join-Path $PSScriptRoot 'Config\settings.json'
 $settings = if (Test-Path -LiteralPath $settingsPath) { Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
 
-Import-TkStyle -Path (Join-Path $PSScriptRoot 'Core\Styles.xaml')
-$ui = Import-TkXaml -Path (Join-Path $PSScriptRoot 'Core\MainWindow.xaml')
 $preferences = Get-TkPreference
+Import-TkStyle -Path (Join-Path $PSScriptRoot 'Core\Styles.xaml') -Theme (Resolve-TkTheme $preferences.Theme)
+$ui = Import-TkXaml -Path (Join-Path $PSScriptRoot 'Core\MainWindow.xaml')
 
 # Leading comma: without it PowerShell would unroll the (empty) set into $null on return.
 function New-TkStringSet { , [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) }
@@ -56,6 +56,7 @@ $State = @{
     SelectedTags  = New-TkStringSet       # tag filter: a module must carry all of these
     Collapsed     = New-TkStringSet       # tree groups the user folded away
     GroupBy       = $preferences.GroupBy
+    Theme         = $preferences.Theme     # System (follow Windows), Light or Dark
     Viewer        = $null                 # the open script viewer, if any
     Inventory     = @()                   # rows for the Installed modules tab
     InventoryJob  = $null                 # scan running in its own runspace, apart from the worker
@@ -65,7 +66,6 @@ $State = @{
 foreach ($id in $preferences.Favorites) { [void]$State.Favorites.Add($id) }
 
 $Star = @{ On = [string][char]0x2605; Off = [string][char]0x2606 }
-$Gold = (New-Object System.Windows.Media.BrushConverter).ConvertFromString('#F59E0B')
 
 #region Helpers
 
@@ -115,7 +115,7 @@ function Start-UiJob {
 
 function Set-ConnectionIndicator {
     param($Dot, $Label, [string] $Service, [bool] $Connected, [string] $Account)
-    $Dot.Fill = if ($Connected) { [System.Windows.Media.Brushes]::LimeGreen } else { [System.Windows.Media.Brushes]::Gray }
+    $Dot.SetResourceReference([System.Windows.Shapes.Shape]::FillProperty, $(if ($Connected) { 'Tk.Connected' } else { 'Tk.Disconnected' }))
     $Label.Text = if ($Connected) { "${Service}: $Account" } else { "${Service}: not connected" }
 }
 
@@ -134,16 +134,23 @@ function Save-Preferences {
         Save-TkPreference -Preference ([pscustomobject]@{
             Favorites = [string[]]@($State.Favorites | Sort-Object)
             GroupBy   = $State.GroupBy
+            Theme     = $State.Theme
         })
     }
     catch { Write-UiLog 'WARN' "Could not save preferences: $($_.Exception.Message)" }
+}
+
+function Sync-Theme {
+    <# Shows the preferred theme. 'System' rereads the Windows app mode, so calling this on Activated follows changes. #>
+    $theme = Resolve-TkTheme $State.Theme
+    if ($theme -ne (Get-TkTheme)) { Set-TkTheme -Theme $theme }
 }
 
 function Set-StarState {
     param($Button, [bool] $IsFavorite, [string] $ModuleName)
     $Button.Content = if ($IsFavorite) { $Star.On } else { $Star.Off }
     # Local gold while set; otherwise clear it so the style's grey + gold-on-hover applies.
-    if ($IsFavorite) { $Button.Foreground = $Gold } else { $Button.ClearValue([System.Windows.Controls.Control]::ForegroundProperty) }
+    if ($IsFavorite) { $Button.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'Tk.Gold') } else { $Button.ClearValue([System.Windows.Controls.Control]::ForegroundProperty) }
     $Button.ToolTip = if ($IsFavorite) { 'Remove from favourites' } else { 'Add to favourites' }
     [System.Windows.Automation.AutomationProperties]::SetName($Button, "Favourite: $ModuleName")
 }
@@ -235,7 +242,7 @@ function New-ModuleTreeItem {
     $label = New-Object System.Windows.Controls.TextBlock
     $label.Text = $Module.Name
     $label.VerticalAlignment = 'Center'
-    if (-not $Module.IsValid) { $label.Foreground = [System.Windows.Media.Brushes]::Firebrick }
+    if (-not $Module.IsValid) { $label.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.Error') }
     [void]$row.Children.Add($star)
     [void]$row.Children.Add($label)
     $item.Header = $row
@@ -293,7 +300,7 @@ function Update-ModuleTree {
     if ($ui.ModuleTree.Items.Count -eq 0) {
         $empty = New-Object System.Windows.Controls.TreeViewItem
         $empty.Header = 'No modules match the search or tag filter.'
-        $empty.Foreground = [System.Windows.Media.Brushes]::Gray
+        $empty.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'Tk.SubtleText')
         $empty.Focusable = $false
         [void]$ui.ModuleTree.Items.Add($empty)
     }
@@ -392,7 +399,7 @@ function Update-DryRunOption {
     $caveats = @($Module.DryRun.Caveats)
     if ($caveats) {
         $how += "`nNot covered: " + ($caveats -join ' ')
-        $ui.DryRunInfo.Foreground = [System.Windows.Media.Brushes]::DarkOrange
+        $ui.DryRunInfo.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.DryRunWarning')
     }
     else { $ui.DryRunInfo.ClearValue([System.Windows.Controls.TextBlock]::ForegroundProperty) }
     $ui.DryRunInfo.Text = $how
@@ -885,6 +892,16 @@ $ui.ExportButton.Add_Click({
 })
 
 $ui.Window.Add_ContentRendered({ Update-ConnectionStatus; Start-InventoryScan })
+
+# Theme: set the box before hooking it up, so loading the preference doesn't save it straight back.
+$ui.ThemeBox.SelectedIndex = [math]::Max(0, [array]::IndexOf(@('System', 'Light', 'Dark'), $State.Theme))
+$ui.ThemeBox.Add_SelectionChanged({
+    $State.Theme = [string]$ui.ThemeBox.SelectedItem.Tag
+    Save-Preferences
+    Sync-Theme
+})
+# Coming back to the toolkit after changing Windows' light/dark mode picks up the new mode.
+$ui.Window.Add_Activated({ if ($State.Theme -eq 'System') { Sync-Theme } })
 
 # Safety net: an exception escaping any event handler would otherwise terminate the whole app.
 $ui.Window.Dispatcher.Add_UnhandledException({

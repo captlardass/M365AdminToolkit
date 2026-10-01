@@ -1,35 +1,52 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="M365 Admin Toolkit" Height="800" Width="1260" MinHeight="580" MinWidth="940"
-        WindowStartupLocation="CenterScreen" Background="#F3F4F6"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Tk.WindowBackground}" Foreground="{DynamicResource Tk.Text}"
         FontFamily="Segoe UI" FontSize="13">
     <!-- Styles live in Styles.xaml (application resources). -->
     <DockPanel>
         <!-- Header: title + connection state -->
-        <Border DockPanel.Dock="Top" Background="#1F2937" Padding="16,10">
+        <Border DockPanel.Dock="Top" Background="{DynamicResource Tk.HeaderBackground}" Padding="16,10">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse x:Name="GraphDot" Width="10" Height="10" Fill="#9CA3AF" Margin="0,0,6,0" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="GraphStatus" Text="Graph: not connected" Foreground="#E5E7EB" Margin="0,0,18,0" VerticalAlignment="Center"/>
-                    <Ellipse x:Name="ExoDot" Width="10" Height="10" Fill="#9CA3AF" Margin="0,0,6,0" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="ExoStatus" Text="Exchange: not connected" Foreground="#E5E7EB" Margin="0,0,18,0" VerticalAlignment="Center"/>
+                    <Ellipse x:Name="GraphDot" Width="10" Height="10" Fill="{DynamicResource Tk.Disconnected}" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="GraphStatus" Text="Graph: not connected" Foreground="{DynamicResource Tk.HeaderStatusText}" Margin="0,0,18,0" VerticalAlignment="Center"/>
+                    <Ellipse x:Name="ExoDot" Width="10" Height="10" Fill="{DynamicResource Tk.Disconnected}" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="ExoStatus" Text="Exchange: not connected" Foreground="{DynamicResource Tk.HeaderStatusText}" Margin="0,0,18,0" VerticalAlignment="Center"/>
                     <Button x:Name="ConnectGraphButton" Content="Connect Graph"/>
                     <Button x:Name="ConnectExoButton" Content="Connect Exchange"/>
                     <Button x:Name="DisconnectButton" Content="Disconnect all"/>
                 </StackPanel>
                 <StackPanel Orientation="Vertical" VerticalAlignment="Center">
-                    <TextBlock Text="M365 Admin Toolkit" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
-                    <TextBlock x:Name="SubTitle" Text="Modular PowerShell tasks" Foreground="#9CA3AF" FontSize="11"/>
+                    <TextBlock Text="M365 Admin Toolkit" Foreground="{DynamicResource Tk.HeaderText}" FontSize="18" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="SubTitle" Text="Modular PowerShell tasks" Foreground="{DynamicResource Tk.HeaderSubtle}" FontSize="11"/>
                 </StackPanel>
             </DockPanel>
         </Border>
 
-        <StatusBar DockPanel.Dock="Bottom" Background="#E5E7EB">
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBar.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <DockPanel LastChildFill="True"/>
+                </ItemsPanelTemplate>
+            </StatusBar.ItemsPanel>
+            <StatusBarItem DockPanel.Dock="Right" Margin="0,0,6,0">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Theme" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource Tk.SubtleText}"/>
+                    <ComboBox x:Name="ThemeBox" MinWidth="130" Padding="6,1,24,1" AutomationProperties.Name="Theme"
+                              ToolTip="Match Windows follows the light/dark app mode in Windows Settings">
+                        <ComboBoxItem Content="Match Windows" Tag="System"/>
+                        <ComboBoxItem Content="Light" Tag="Light"/>
+                        <ComboBoxItem Content="Dark" Tag="Dark"/>
+                    </ComboBox>
+                </StackPanel>
+            </StatusBarItem>
+            <StatusBarItem DockPanel.Dock="Right">
+                <ProgressBar x:Name="BusyBar" Width="140" Height="10" Visibility="Collapsed"/>
+            </StatusBarItem>
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" Text="Ready"/>
-            </StatusBarItem>
-            <StatusBarItem HorizontalAlignment="Right">
-                <ProgressBar x:Name="BusyBar" Width="140" Height="10" Visibility="Collapsed"/>
             </StatusBarItem>
         </StatusBar>
 
@@ -51,7 +68,7 @@
                     <TextBox DockPanel.Dock="Top" x:Name="SearchBox" Margin="0,0,0,8" Padding="4,3"
                              ToolTip="Search by name, category, tag or description"/>
                     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
-                        <TextBlock Text="Group by" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#6B7280"/>
+                        <TextBlock Text="Group by" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource Tk.SubtleText}"/>
                         <ComboBox x:Name="GroupByBox">
                             <ComboBoxItem Content="Category" Tag="Category"/>
                             <ComboBoxItem Content="Tag" Tag="Tag"/>
@@ -63,7 +80,7 @@
                         <WrapPanel x:Name="TagPanel"/>
                     </ScrollViewer>
                     <Button DockPanel.Dock="Bottom" x:Name="ReloadButton" Content="Reload modules" Margin="0,8,0,0"/>
-                    <TreeView x:Name="ModuleTree" BorderThickness="0,1,0,0" BorderBrush="#E5E7EB" Padding="0,6,0,0"/>
+                    <TreeView x:Name="ModuleTree" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource Tk.CardBorder}" Padding="0,6,0,0"/>
                 </DockPanel>
             </Border>
 
@@ -92,7 +109,7 @@
                                     Visibility="Collapsed" Margin="0,0,8,0"/>
                             <TextBlock x:Name="ModuleTitle" Text="Select a module" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center"/>
                         </DockPanel>
-                        <TextBlock x:Name="ModuleMeta" Foreground="#6B7280" FontSize="11" Margin="0,2,0,6"/>
+                        <TextBlock x:Name="ModuleMeta" Foreground="{DynamicResource Tk.SubtleText}" FontSize="11" Margin="0,2,0,6"/>
                         <WrapPanel x:Name="HeaderTagPanel"/>
                         <DockPanel x:Name="TagEditPanel" Visibility="Collapsed" Margin="0,0,0,6">
                             <Button x:Name="CancelTagsButton" DockPanel.Dock="Right" Content="Cancel" Padding="8,2"/>
@@ -130,22 +147,22 @@
                         <TabItem x:Name="ResultsTab" Header="Results">
                             <DockPanel Margin="0,6,0,0">
                                 <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6" LastChildFill="False">
-                                    <TextBlock x:Name="ResultCount" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="#6B7280" Text="No results yet"/>
+                                    <TextBlock x:Name="ResultCount" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource Tk.SubtleText}" Text="No results yet"/>
                                     <Button x:Name="ExportButton" DockPanel.Dock="Right" Content="Export CSV..." IsEnabled="False"/>
                                 </DockPanel>
                                 <DataGrid x:Name="ResultGrid" AutoGenerateColumns="True" IsReadOnly="True"
                                           CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                                          HorizontalGridLinesBrush="#E5E7EB" AlternatingRowBackground="#F9FAFB"
+                                          AlternatingRowBackground="{DynamicResource Tk.RowAlternate}"
                                           ClipboardCopyMode="IncludeHeader" SelectionMode="Extended"/>
                             </DockPanel>
                         </TabItem>
                         <TabItem x:Name="BlockedTab" Header="Blocked changes">
                             <DockPanel Margin="0,6,0,0">
-                                <TextBlock x:Name="BlockedSummary" DockPanel.Dock="Top" Margin="0,0,0,6" Foreground="#6B7280" TextWrapping="Wrap"
+                                <TextBlock x:Name="BlockedSummary" DockPanel.Dock="Top" Margin="0,0,0,6" Foreground="{DynamicResource Tk.SubtleText}" TextWrapping="Wrap"
                                            Text="Changes the dry-run guard stopped appear here: each is something the script tried to do in Microsoft 365."/>
                                 <DataGrid x:Name="BlockedGrid" AutoGenerateColumns="True" IsReadOnly="True"
                                           CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                                          HorizontalGridLinesBrush="#E5E7EB" AlternatingRowBackground="#FFFBEB"
+                                          AlternatingRowBackground="{DynamicResource Tk.RowBlockedAlternate}"
                                           ClipboardCopyMode="IncludeHeader" SelectionMode="Extended"/>
                             </DockPanel>
                         </TabItem>
@@ -161,30 +178,30 @@
                                             ToolTip="List the PowerShell modules installed on this PC again"/>
                                     <CheckBox x:Name="ShowGraphSubCheck" DockPanel.Dock="Right" Content="Show Graph sub-modules"
                                               VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                    <TextBlock x:Name="InventorySummary" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="#6B7280"
+                                    <TextBlock x:Name="InventorySummary" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource Tk.SubtleText}"
                                                TextWrapping="Wrap" Text="Scanning installed PowerShell modules..."/>
                                 </DockPanel>
                                 <DataGrid x:Name="InventoryGrid" AutoGenerateColumns="True" IsReadOnly="True"
                                           CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                                          HorizontalGridLinesBrush="#E5E7EB" ClipboardCopyMode="IncludeHeader" SelectionMode="Extended">
+                                          ClipboardCopyMode="IncludeHeader" SelectionMode="Extended">
                                     <!-- Rows that need attention are tinted: red = missing, amber = should be fixed. -->
                                     <DataGrid.RowStyle>
                                         <Style TargetType="DataGridRow">
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding Status}" Value="Missing">
-                                                    <Setter Property="Background" Value="#FEE2E2"/>
+                                                    <Setter Property="Background" Value="{DynamicResource Tk.RowMissing}"/>
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding Status}" Value="Update available">
-                                                    <Setter Property="Background" Value="#FEF3C7"/>
+                                                    <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding Status}" Value="Version mismatch">
-                                                    <Setter Property="Background" Value="#FEF3C7"/>
+                                                    <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding Status}" Value="Retired">
-                                                    <Setter Property="Background" Value="#FEF3C7"/>
+                                                    <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding Status}" Value="Not installed">
-                                                    <Setter Property="Foreground" Value="#9CA3AF"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource Tk.FaintText}"/>
                                                 </DataTrigger>
                                             </Style.Triggers>
                                         </Style>

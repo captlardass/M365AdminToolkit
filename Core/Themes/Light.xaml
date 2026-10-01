@@ -1,0 +1,81 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Light palette. Dark.xaml must define the same Tk.* keys (the theme test checks this).
+         Use these with {DynamicResource ...} so the theme can change while the toolkit runs. -->
+
+    <SolidColorBrush x:Key="Tk.WindowBackground" Color="#F3F4F6"/>
+    <SolidColorBrush x:Key="Tk.CardBackground" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Tk.CardBorder" Color="#E5E7EB"/>
+    <SolidColorBrush x:Key="Tk.Text" Color="#111827"/>
+    <SolidColorBrush x:Key="Tk.SubtleText" Color="#6B7280"/>
+    <SolidColorBrush x:Key="Tk.FaintText" Color="#9CA3AF"/>
+    <SolidColorBrush x:Key="Tk.DisabledText" Color="#9CA3AF"/>
+
+    <SolidColorBrush x:Key="Tk.HeaderBackground" Color="#1F2937"/>
+    <SolidColorBrush x:Key="Tk.HeaderText" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Tk.HeaderSubtle" Color="#9CA3AF"/>
+    <SolidColorBrush x:Key="Tk.HeaderStatusText" Color="#E5E7EB"/>
+    <SolidColorBrush x:Key="Tk.StatusBarBackground" Color="#E5E7EB"/>
+
+    <SolidColorBrush x:Key="Tk.InputBackground" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Tk.InputBorder" Color="#D1D5DB"/>
+    <SolidColorBrush x:Key="Tk.ButtonBackground" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Tk.ButtonBorder" Color="#D1D5DB"/>
+    <SolidColorBrush x:Key="Tk.ButtonHover" Color="#F3F4F6"/>
+    <SolidColorBrush x:Key="Tk.ButtonPressed" Color="#E5E7EB"/>
+
+    <SolidColorBrush x:Key="Tk.Accent" Color="#2563EB"/>
+    <SolidColorBrush x:Key="Tk.AccentBorder" Color="#1D4ED8"/>
+    <SolidColorBrush x:Key="Tk.AccentHover" Color="#1D4ED8"/>
+    <SolidColorBrush x:Key="Tk.AccentPressed" Color="#1E40AF"/>
+    <SolidColorBrush x:Key="Tk.AccentText" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Tk.Link" Color="#2563EB"/>
+
+    <SolidColorBrush x:Key="Tk.ChipBackground" Color="#F3F4F6"/>
+    <SolidColorBrush x:Key="Tk.ChipBorder" Color="#D1D5DB"/>
+    <SolidColorBrush x:Key="Tk.ChipText" Color="#374151"/>
+
+    <SolidColorBrush x:Key="Tk.GridLine" Color="#E5E7EB"/>
+    <SolidColorBrush x:Key="Tk.GridHeaderBackground" Color="#F9FAFB"/>
+    <SolidColorBrush x:Key="Tk.RowAlternate" Color="#F9FAFB"/>
+    <SolidColorBrush x:Key="Tk.RowBlockedAlternate" Color="#FFFBEB"/>
+    <SolidColorBrush x:Key="Tk.RowMissing" Color="#FEE2E2"/>
+    <SolidColorBrush x:Key="Tk.RowWarning" Color="#FEF3C7"/>
+
+    <SolidColorBrush x:Key="Tk.Selection" Color="#2563EB"/>
+    <SolidColorBrush x:Key="Tk.SelectionText" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Tk.InactiveSelection" Color="#E5E7EB"/>
+    <SolidColorBrush x:Key="Tk.InactiveSelectionText" Color="#111827"/>
+
+    <SolidColorBrush x:Key="Tk.Error" Color="#B91C1C"/>
+    <SolidColorBrush x:Key="Tk.Warning" Color="#B45309"/>
+    <SolidColorBrush x:Key="Tk.DryRunWarning" Color="#C2410C"/>
+    <SolidColorBrush x:Key="Tk.Gold" Color="#F59E0B"/>
+    <SolidColorBrush x:Key="Tk.Connected" Color="#22C55E"/>
+    <SolidColorBrush x:Key="Tk.Disconnected" Color="#9CA3AF"/>
+
+    <SolidColorBrush x:Key="Tk.ScrollThumb" Color="#C4C8CE"/>
+    <SolidColorBrush x:Key="Tk.ScrollThumbHover" Color="#9CA3AF"/>
+    <SolidColorBrush x:Key="Tk.ProgressTrack" Color="#D1D5DB"/>
+    <SolidColorBrush x:Key="Tk.TooltipBackground" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Tk.TooltipText" Color="#111827"/>
+    <SolidColorBrush x:Key="Tk.TooltipBorder" Color="#D1D5DB"/>
+
+    <!-- Script viewer syntax colours -->
+    <SolidColorBrush x:Key="Tk.Code.Comment" Color="#15803D"/>
+    <SolidColorBrush x:Key="Tk.Code.String" Color="#A31515"/>
+    <SolidColorBrush x:Key="Tk.Code.Variable" Color="#1D4ED8"/>
+    <SolidColorBrush x:Key="Tk.Code.Keyword" Color="#7C3AED"/>
+    <SolidColorBrush x:Key="Tk.Code.Command" Color="#0E7490"/>
+    <SolidColorBrush x:Key="Tk.Code.Parameter" Color="#6B7280"/>
+    <SolidColorBrush x:Key="Tk.Code.Number" Color="#B45309"/>
+    <SolidColorBrush x:Key="Tk.Code.Type" Color="#0F766E"/>
+    <SolidColorBrush x:Key="Tk.Code.Match" Color="#FEF08A"/>
+    <SolidColorBrush x:Key="Tk.Code.LineNumber" Color="#9CA3AF"/>
+
+    <!-- Built-in templates (tree, grid cells) draw selection with these system keys. -->
+    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2563EB"/>
+    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#E5E7EB"/>
+    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#111827"/>
+</ResourceDictionary>

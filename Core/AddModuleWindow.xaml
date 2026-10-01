@@ -2,12 +2,12 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Add module" Width="780" Height="760" MinWidth="620" MinHeight="520"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="CanResizeWithGrip"
-        Background="#F3F4F6" FontFamily="Segoe UI" FontSize="13">
+        Background="{DynamicResource Tk.WindowBackground}" Foreground="{DynamicResource Tk.Text}" FontFamily="Segoe UI" FontSize="13">
     <DockPanel Margin="14">
         <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
             <Button x:Name="CancelDialogButton" DockPanel.Dock="Right" Content="Cancel" IsCancel="True"/>
             <Button x:Name="CreateButton" DockPanel.Dock="Right" Content="Add module" Style="{StaticResource Primary}"/>
-            <TextBlock x:Name="DialogStatus" Foreground="#B91C1C" TextWrapping="Wrap" VerticalAlignment="Center"/>
+            <TextBlock x:Name="DialogStatus" Foreground="{DynamicResource Tk.Error}" TextWrapping="Wrap" VerticalAlignment="Center"/>
         </DockPanel>
 
         <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -25,9 +25,9 @@
                             <TextBox x:Name="ScriptPathBox" Padding="4,3"/>
                         </DockPanel>
                         <TextBlock x:Name="AnalysisSummary" Margin="0,8,0,0" TextWrapping="Wrap"/>
-                        <TextBlock x:Name="WarningText" Foreground="#B45309" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        <TextBlock x:Name="WarningText" Foreground="{DynamicResource Tk.Warning}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                         <DataGrid x:Name="ParamGrid" AutoGenerateColumns="True" IsReadOnly="True" CanUserAddRows="False"
-                                  HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#E5E7EB"
+                                  HeadersVisibility="Column" GridLinesVisibility="Horizontal" 
                                   MaxHeight="170" Margin="0,8,0,0" Visibility="Collapsed"/>
                     </StackPanel>
                 </Border>

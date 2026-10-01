@@ -7,17 +7,7 @@
     non-modal viewer owned by the main window and the modal one opened from Add module.
 #>
 
-$script:TkCodeBrushes = @{}
-foreach ($pair in @(
-        @('Comment', '#15803D'), @('String', '#A31515'), @('Variable', '#1D4ED8'), @('Keyword', '#7C3AED'),
-        @('Command', '#0E7490'), @('Parameter', '#6B7280'), @('Number', '#B45309'), @('Type', '#0F766E'))) {
-    $brush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString($pair[1])
-    $brush.Freeze()
-    $script:TkCodeBrushes[$pair[0]] = $brush
-}
-$script:TkMatchBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString('#FEF08A')
-$script:TkLineNumberBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFromString('#9CA3AF')
-
+# Colours are theme resources (Tk.Code.<kind> in Core\Themes), so the code recolours with the theme.
 function Add-TkCodeLines {
     <# Fills a ListBox with one row per line: line number + coloured code. Row.Tag = plain text. #>
     param([System.Windows.Controls.ListBox] $List, [object[]] $Lines)
@@ -30,7 +20,7 @@ function Add-TkCodeLines {
         $number.Text = [string]$line.Number
         $number.Width = $width
         $number.TextAlignment = 'Right'
-        $number.Foreground = $script:TkLineNumberBrush
+        $number.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.Code.LineNumber')
         $number.Margin = New-Object System.Windows.Thickness 0, 0, 14, 0
         [void]$row.Children.Add($number)
 
@@ -39,7 +29,7 @@ function Add-TkCodeLines {
             $kind = $part[0]
             $run = New-Object System.Windows.Documents.Run $part[1]
             if ($kind) {
-                $run.Foreground = $script:TkCodeBrushes[$kind]
+                $run.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, "Tk.Code.$kind")
                 if ($kind -eq 'Keyword') { $run.FontWeight = [System.Windows.FontWeights]::SemiBold }
                 if ($kind -eq 'Comment') { $run.FontStyle = [System.Windows.FontStyles]::Italic }
             }
@@ -63,7 +53,7 @@ function Update-TkViewerFind {
     $hits = 0      # not $matches - that's an automatic variable
     foreach ($row in $list.Items) {
         $hit = $needle -and ([string]$row.Tag).IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0
-        if ($hit) { $row.Background = $script:TkMatchBrush; $hits++ } else { $row.ClearValue([System.Windows.Controls.Panel]::BackgroundProperty) }
+        if ($hit) { $row.SetResourceReference([System.Windows.Controls.Panel]::BackgroundProperty, 'Tk.Code.Match'); $hits++ } else { $row.ClearValue([System.Windows.Controls.Panel]::BackgroundProperty) }
     }
     $Viewer.Ui.FindStatus.Text = if (-not $needle) { '' } elseif ($hits) { "$hits matching line(s)" } else { 'No matches' }
 }

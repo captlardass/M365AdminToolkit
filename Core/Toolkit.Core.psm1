@@ -707,12 +707,14 @@ function Get-TkPreferencePath {
 
 function Get-TkPreference {
     param([string] $Path = (Get-TkPreferencePath))
-    $preference = [pscustomobject]@{ Favorites = [string[]]@(); GroupBy = 'Category' }
+    # Theme: System follows the Windows app mode; Light or Dark override it.
+    $preference = [pscustomobject]@{ Favorites = [string[]]@(); GroupBy = 'Category'; Theme = 'System' }
     if (Test-Path -LiteralPath $Path) {
         try {
             $saved = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($saved.Favorites) { $preference.Favorites = [string[]]@($saved.Favorites) }
             if ($saved.GroupBy) { $preference.GroupBy = [string]$saved.GroupBy }
+            if ($saved.Theme -in 'System', 'Light', 'Dark') { $preference.Theme = [string]$saved.Theme }
         }
         catch {
             # A corrupt preferences file is not worth failing over - start from defaults.
@@ -796,7 +798,6 @@ function New-TkParameterForm {
 
     $Panel.Children.Clear()
     $controls = [ordered]@{}
-    $grey = [System.Windows.Media.Brushes]::DimGray
 
     foreach ($p in $Module.Parameters) {
         $label = New-Object System.Windows.Controls.TextBlock
@@ -841,7 +842,7 @@ function New-TkParameterForm {
         if ($p.HelpText -and $p.Type -ne 'Bool') {
             $help = New-Object System.Windows.Controls.TextBlock
             $help.Text = $p.HelpText
-            $help.Foreground = $grey
+            $help.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.SubtleText')
             $help.FontSize = 11
             $help.TextWrapping = 'Wrap'
             $help.Margin = New-Object System.Windows.Thickness 0, 2, 0, 0
@@ -853,7 +854,7 @@ function New-TkParameterForm {
     if ($controls.Count -eq 0) {
         $none = New-Object System.Windows.Controls.TextBlock
         $none.Text = 'This module takes no input.'
-        $none.Foreground = $grey
+        $none.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.SubtleText')
         [void]$Panel.Children.Add($none)
     }
     $controls
@@ -1407,15 +1408,93 @@ function ConvertTo-TkDataTable {
 function Import-TkStyle {
     <#
     .SYNOPSIS
-        Loads a ResourceDictionary into application resources so every window can use its styles.
+        Loads a ResourceDictionary into application resources so every window can use its styles,
+        plus the colour palette from Themes\<Theme>.xaml next to it.
     #>
-    param([Parameter(Mandatory)] [string] $Path)
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [ValidateSet('Light', 'Dark')] [string] $Theme = 'Light'
+    )
     $dictionary = [System.Windows.Markup.XamlReader]::Parse((Get-Content -LiteralPath $Path -Raw -Encoding UTF8))
     if (-not [System.Windows.Application]::Current) {
         $app = New-Object System.Windows.Application
         $app.ShutdownMode = 'OnExplicitShutdown'   # we drive windows with ShowDialog, not Application.Run
     }
+    $script:TkThemeFolder = Join-Path (Split-Path -Path $Path -Parent) 'Themes'
+    Set-TkTheme -Theme $Theme
     [System.Windows.Application]::Current.Resources.MergedDictionaries.Add($dictionary)
+}
+
+function Get-TkSystemTheme {
+    <#
+    .SYNOPSIS
+        'Dark' when Windows is set to dark mode for apps (Settings > Personalisation > Colours),
+        otherwise 'Light' - also when the setting doesn't exist (older Windows, Server Core).
+    #>
+    try {
+        $personalize = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme -ErrorAction Stop
+        if ($personalize.AppsUseLightTheme -eq 0) { return 'Dark' }
+    }
+    catch {
+        # No setting: Windows' default is light.
+    }
+    'Light'
+}
+
+function Resolve-TkTheme {
+    <# Turns a preference (System, Light or Dark) into the theme to show. #>
+    param([string] $Preference)
+    if ($Preference -in 'Light', 'Dark') { return $Preference }
+    Get-TkSystemTheme
+}
+
+function Get-TkTheme { $script:TkTheme }
+
+function Set-TkTheme {
+    <#
+    .SYNOPSIS
+        Swaps the colour palette. Everything uses DynamicResource, so open windows recolour at once.
+    #>
+    param([Parameter(Mandatory)] [ValidateSet('Light', 'Dark')] [string] $Theme)
+    $merged = [System.Windows.Application]::Current.Resources.MergedDictionaries
+    $path = Join-Path $script:TkThemeFolder "$Theme.xaml"
+    $palette = [System.Windows.Markup.XamlReader]::Parse((Get-Content -LiteralPath $path -Raw -Encoding UTF8))
+    $index = if ($script:TkThemeDictionary) { $merged.IndexOf($script:TkThemeDictionary) } else { -1 }
+    if ($index -ge 0) { $merged[$index] = $palette } else { $merged.Insert(0, $palette) }
+    $script:TkThemeDictionary = $palette
+    $script:TkTheme = $Theme
+    foreach ($window in [System.Windows.Application]::Current.Windows) { Set-TkWindowTheme -Window $window }
+}
+
+function Set-TkWindowTheme {
+    <#
+    .SYNOPSIS
+        Gives a window a dark or light title bar to match the theme. Windows 10 20H1 and later;
+        a no-op elsewhere. Cosmetic, so it never throws.
+    #>
+    param([System.Windows.Window] $Window)
+    try {
+        $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper $Window).Handle
+        if ($hwnd -eq [IntPtr]::Zero) { return }       # not shown yet: SourceInitialized calls this again
+        $dark = [int]($script:TkTheme -eq 'Dark')
+        $loaded = [bool]('TkNative.Dwm' -as [type])
+        if (-not $dark -and -not $loaded) { return }   # light is the default: nothing to undo
+        if (-not $loaded) {
+            Add-Type -Namespace TkNative -Name Dwm -MemberDefinition @'
+[DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+'@
+        }
+        # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE; Windows 10 builds before 19041 used 19.
+        if ([TkNative.Dwm]::DwmSetWindowAttribute($hwnd, 20, [ref]$dark, 4) -ne 0) {
+            [void][TkNative.Dwm]::DwmSetWindowAttribute($hwnd, 19, [ref]$dark, 4)
+        }
+        # Redraw the frame now: NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED.
+        [void][TkNative.Dwm]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, 0, 0, 0x37)
+    }
+    catch {
+        # Older Windows or no dwmapi: keep the default title bar.
+    }
 }
 
 function Import-TkXaml {
@@ -1427,6 +1506,8 @@ function Import-TkXaml {
 
     $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
     $window = [System.Windows.Markup.XamlReader]::Parse($text)
+    # The title bar colour needs a window handle, which exists from SourceInitialized on.
+    if ($window -is [System.Windows.Window]) { $window.Add_SourceInitialized({ Set-TkWindowTheme -Window $this }) }
     $ui = @{ Window = $window }
     foreach ($match in [regex]::Matches($text, 'x:Name="([^"]+)"')) {
         $name = $match.Groups[1].Value
@@ -1457,6 +1538,7 @@ function Write-TkLogFile {
 Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm, Get-TkParameterValue,
     New-TkWorker, Start-TkJob, Receive-TkJob, Complete-TkJob, Stop-TkJob,
     ConvertTo-TkFlatObject, ConvertTo-TkDataTable, Import-TkStyle, Import-TkXaml, Write-TkLogFile,
+    Get-TkSystemTheme, Resolve-TkTheme, Get-TkTheme, Set-TkTheme,
     Split-TkList, ConvertTo-TkLabel, Get-TkSuggestedId, Get-TkScriptAnalysis, New-TkModule, Set-TkModuleTag,
     Get-TkPreference, Save-TkPreference, ConvertTo-TkJson,
     Get-TkDryRunProfile, ConvertTo-TkCodeLine, Get-TkFileSummary,
