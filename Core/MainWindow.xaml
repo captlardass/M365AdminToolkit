@@ -149,6 +149,49 @@
                                           ClipboardCopyMode="IncludeHeader" SelectionMode="Extended"/>
                             </DockPanel>
                         </TabItem>
+                        <TabItem x:Name="InventoryTab" Header="Installed modules">
+                            <DockPanel Margin="0,6,0,0">
+                                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6" LastChildFill="False">
+                                    <Button x:Name="UpdateModulesButton" DockPanel.Dock="Right" Content="Update all" IsEnabled="False"
+                                            Style="{StaticResource Primary}" ToolTipService.ShowOnDisabled="True"
+                                            ToolTip="Click 'Check for updates' first"/>
+                                    <Button x:Name="CheckUpdatesButton" DockPanel.Dock="Right" Content="Check for updates"
+                                            ToolTip="Compare installed versions with the latest on the PowerShell Gallery (needs internet)"/>
+                                    <Button x:Name="RescanModulesButton" DockPanel.Dock="Right" Content="Rescan"
+                                            ToolTip="List the PowerShell modules installed on this PC again"/>
+                                    <CheckBox x:Name="ShowGraphSubCheck" DockPanel.Dock="Right" Content="Show Graph sub-modules"
+                                              VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock x:Name="InventorySummary" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="#6B7280"
+                                               TextWrapping="Wrap" Text="Scanning installed PowerShell modules..."/>
+                                </DockPanel>
+                                <DataGrid x:Name="InventoryGrid" AutoGenerateColumns="True" IsReadOnly="True"
+                                          CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                          HorizontalGridLinesBrush="#E5E7EB" ClipboardCopyMode="IncludeHeader" SelectionMode="Extended">
+                                    <!-- Rows that need attention are tinted: red = missing, amber = should be fixed. -->
+                                    <DataGrid.RowStyle>
+                                        <Style TargetType="DataGridRow">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Status}" Value="Missing">
+                                                    <Setter Property="Background" Value="#FEE2E2"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding Status}" Value="Update available">
+                                                    <Setter Property="Background" Value="#FEF3C7"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding Status}" Value="Version mismatch">
+                                                    <Setter Property="Background" Value="#FEF3C7"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding Status}" Value="Retired">
+                                                    <Setter Property="Background" Value="#FEF3C7"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding Status}" Value="Not installed">
+                                                    <Setter Property="Foreground" Value="#9CA3AF"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGrid.RowStyle>
+                                </DataGrid>
+                            </DockPanel>
+                        </TabItem>
                         <TabItem x:Name="LogTab" Header="Log">
                             <TextBox x:Name="LogBox" IsReadOnly="True" FontFamily="Consolas" FontSize="12"
                                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"

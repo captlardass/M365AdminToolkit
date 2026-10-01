@@ -521,6 +521,16 @@ function Get-TkScriptAnalysis {
             }
         }
     }
+    # Scripts written for the toolkit don't connect themselves, so they declare scopes in a comment:
+    #   # GraphScopes: User.Read.All, RoleManagement.Read.Directory
+    foreach ($token in $tokens | Where-Object { $_.Kind -eq 'Comment' }) {
+        foreach ($line in $token.Text -split '\r?\n') {
+            if ($line -notmatch '^\s*(<#|#)?\s*GraphScopes\s*:\s*(?<list>.+?)\s*(#>)?\s*$') { continue }
+            foreach ($scope in Split-TkList @($Matches['list']) -Separator '[,\s]+') {
+                if (-not $scopes.Contains($scope)) { $scopes.Add($scope) }
+            }
+        }
+    }
 
     $connects = @($names | Where-Object { $_ -in 'Connect-MgGraph', 'Connect-ExchangeOnline', 'Connect-IPPSSession' } | Sort-Object -Unique)
     if ($connects) {
@@ -539,7 +549,7 @@ function Get-TkScriptAnalysis {
         $warnings.Add("Uses $($interactive -join ', '), which needs a console and will hang or fail. Turn those prompts into parameters.")
     }
     if ($usesGraph -and -not $scopes.Count) {
-        $warnings.Add('Uses Microsoft Graph, but no scopes could be detected. Enter the scopes it needs below.')
+        $warnings.Add("Uses Microsoft Graph, but no scopes could be detected. Enter the scopes it needs below, or add a '# GraphScopes: User.Read.All, ...' line to the script.")
     }
     $harmless = 'Start-Sleep', 'New-Object', 'Add-Member', 'Add-Type', 'Set-StrictMode', 'Set-Variable', 'New-Variable',
         'Remove-Variable', 'Clear-Variable', 'New-TimeSpan', 'Set-Location', 'Clear-Host', 'Add-Content', 'Set-Content',
@@ -1049,6 +1059,288 @@ function Stop-TkJob {
 
 #endregion
 
+#region Installed PowerShell modules
+
+# The M365-related modules the inventory always lists, installed or not.
+# Role: Required (the toolkit needs it), Optional (only some scripts need it), Retired (replace it).
+$script:TkKnownModules = @(
+    @{ Name = 'Microsoft.Graph.Authentication'; Role = 'Required'; Purpose = 'Microsoft Graph sign-in and Invoke-MgGraphRequest' }
+    @{ Name = 'ExchangeOnlineManagement'; Role = 'Required'; Purpose = 'Exchange Online (and Security & Compliance)' }
+    @{ Name = 'Microsoft.Graph'; Role = 'Optional'; Purpose = 'Full Graph SDK bundle (only for scripts that use Microsoft.Graph.* cmdlets)' }
+    @{ Name = 'Microsoft.Graph.Beta'; Role = 'Optional'; Purpose = 'Graph SDK bundle for the beta endpoint' }
+    @{ Name = 'MicrosoftTeams'; Role = 'Optional'; Purpose = 'Microsoft Teams' }
+    @{ Name = 'PnP.PowerShell'; Role = 'Optional'; Purpose = 'SharePoint Online and Teams via PnP (v2 and later need PowerShell 7)' }
+    @{ Name = 'Microsoft.Online.SharePoint.PowerShell'; Role = 'Optional'; Purpose = 'SharePoint Online admin' }
+    @{ Name = 'Az.Accounts'; Role = 'Optional'; Purpose = 'Azure sign-in (Az modules)' }
+    @{ Name = 'AzureAD'; Role = 'Retired'; Purpose = 'Retired by Microsoft - use Microsoft Graph instead' }
+    @{ Name = 'AzureADPreview'; Role = 'Retired'; Purpose = 'Retired by Microsoft - use Microsoft Graph instead' }
+    @{ Name = 'MSOnline'; Role = 'Retired'; Purpose = 'Retired by Microsoft - use Microsoft Graph instead' }
+)
+# Other installed modules that are listed too: every Graph SDK sub-module (their versions must match).
+$script:TkInventoryPattern = '^Microsoft\.Graph\.'
+
+function Get-TkModuleScope {
+    <# Where a module is installed, without exposing the path (it contains the user name). #>
+    param([string] $ModuleBase)
+    if (-not $ModuleBase) { return '' }
+    $documents = [Environment]::GetFolderPath('MyDocuments')
+    $programFiles = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+    if ($documents -and $ModuleBase.StartsWith($documents, [StringComparison]::OrdinalIgnoreCase)) { return 'CurrentUser' }
+    foreach ($p in $programFiles) { if ($ModuleBase.StartsWith($p, [StringComparison]::OrdinalIgnoreCase)) { return 'AllUsers' } }
+    if ($env:windir -and $ModuleBase.StartsWith($env:windir, [StringComparison]::OrdinalIgnoreCase)) { return 'System' }
+    'Other'
+}
+
+function ConvertTo-TkVersion {
+    <# Parses '2.41.0' or '1.2.3-preview' into [version]; $null when it can't. #>
+    param($Value)
+    if ($Value -is [version]) { return $Value }
+    $parsed = $null
+    if ([version]::TryParse(([string]$Value -replace '[-+].*$', ''), [ref]$parsed)) { return $parsed }
+    $null
+}
+
+function Get-TkGalleryVersion {
+    <#
+    .SYNOPSIS
+        Latest stable version of each named module on the PowerShell Gallery, as @{ Name = [version] }.
+        Uses the gallery's REST feed directly: Find-Module can stop to ask for the NuGet provider,
+        and nothing may prompt here. Modules that aren't on the gallery are simply absent.
+    #>
+    param([Parameter(Mandatory)] [string[]] $Name, [int] $TimeoutSec = 30)
+
+    # Windows PowerShell 5.1 may still default to TLS 1.0, which the gallery refuses.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $latest = @{}
+    $names = @($Name | Where-Object { $_ -match '^[\w.-]+$' } | Sort-Object -Unique)
+    for ($i = 0; $i -lt $names.Count; $i += 15) {
+        $chunk = $names[$i..([math]::Min($i + 14, $names.Count - 1))]
+        $ids = ($chunk | ForEach-Object { "Id eq '$_'" }) -join ' or '
+        $filter = [uri]::EscapeDataString("IsLatestVersion and ($ids)")
+        $uri = "https://www.powershellgallery.com/api/v2/Packages()?`$filter=$filter&`$select=Id,Version"
+        foreach ($entry in @(Invoke-RestMethod -Uri $uri -TimeoutSec $TimeoutSec -ErrorAction Stop)) {
+            if (-not $entry.properties) { continue }
+            $version = ConvertTo-TkVersion $entry.properties.Version
+            $id = [string]$entry.properties.Id
+            if ($version -and (-not $latest[$id] -or $version -gt $latest[$id])) { $latest[$id] = $version }
+        }
+    }
+    $latest
+}
+
+function Get-TkModuleInventory {
+    <#
+    .SYNOPSIS
+        One row per M365-related PowerShell module: installed version, latest gallery version and a
+        Status that flags what needs attention (Missing, Update available, Version mismatch, Retired).
+    .PARAMETER Installed
+        Module info objects (Name, Version, ModuleBase). Defaults to Get-Module -ListAvailable.
+    .PARAMETER Latest
+        @{ Name = version } from the gallery. Omit to report installed versions only.
+    #>
+    param(
+        [object[]] $Installed,
+        [hashtable] $Latest,
+        [switch] $CheckGallery
+    )
+
+    if (-not $PSBoundParameters.ContainsKey('Installed')) {
+        $names = @($script:TkKnownModules | ForEach-Object { $_.Name }) + 'Microsoft.Graph.*'
+        $Installed = @(Get-Module -ListAvailable -Name $names -ErrorAction SilentlyContinue)
+    }
+    $byName = @{}
+    foreach ($m in $Installed) {
+        if (-not $m -or -not $m.Name) { continue }
+        if (-not $byName[$m.Name]) { $byName[$m.Name] = New-Object System.Collections.Generic.List[object] }
+        $byName[$m.Name].Add($m)
+    }
+
+    $catalog = [ordered]@{}
+    foreach ($k in $script:TkKnownModules) { $catalog[$k.Name] = $k }
+    foreach ($n in $byName.Keys | Sort-Object) {
+        if (-not $catalog.Contains($n) -and $n -match $script:TkInventoryPattern) {
+            $catalog[$n] = @{ Name = $n; Role = 'Optional'; Purpose = 'Graph SDK sub-module' }
+        }
+    }
+
+    if ($CheckGallery -and -not $Latest) {
+        $Latest = @{}
+        try { $Latest = Get-TkGalleryVersion -Name @($catalog.Keys) }
+        catch { Write-Warning "Could not reach the PowerShell Gallery, so update checks were skipped: $($_.Exception.Message)" }
+    }
+
+    # Graph sub-modules must be the same version as Microsoft.Graph.Authentication, or assemblies clash.
+    $graphAuth = $null
+    if ($byName['Microsoft.Graph.Authentication']) {
+        $graphAuth = @($byName['Microsoft.Graph.Authentication'] | ForEach-Object { ConvertTo-TkVersion $_.Version } | Sort-Object -Descending)[0]
+    }
+
+    $order = @{ Required = 0; Optional = 1; Retired = 2 }
+    $rows = foreach ($entry in $catalog.Values) {
+        $name = $entry.Name
+        # @() around the pipeline, not inside an if: an if would unroll a single copy to a scalar.
+        $copies = @($byName[$name] | Where-Object { $_ } | Sort-Object { ConvertTo-TkVersion $_.Version } -Descending)
+        $current = if ($copies.Count) { ConvertTo-TkVersion $copies[0].Version } else { $null }
+        if (-not $current -and $entry.Role -eq 'Retired') { continue }    # not having these is the goal
+        $newest = if ($Latest) { $Latest[$name] } else { $null }
+        $others = @($copies | Select-Object -Skip 1 | ForEach-Object { [string]$_.Version } | Select-Object -Unique)
+
+        $status, $action = if (-not $current) {
+            if ($entry.Role -eq 'Required') { 'Missing', "Install-Module $name -Scope CurrentUser" } else { 'Not installed', '' }
+        }
+        elseif ($entry.Role -eq 'Retired') { 'Retired', "Rewrite scripts for Microsoft Graph, then Uninstall-Module $name" }
+        elseif ($graphAuth -and $name -like 'Microsoft.Graph.*' -and $name -notlike 'Microsoft.Graph.Beta*' -and $name -ne 'Microsoft.Graph.Authentication' -and $current -ne $graphAuth) {
+            'Version mismatch', "Update-Module Microsoft.Graph.Authentication, $name (keep all Graph modules on one version)"
+        }
+        elseif ($newest -and $current -lt $newest) { 'Update available', "Update-Module $name" }
+        elseif ($newest) { 'Up to date', '' }
+        else { 'Installed', '' }
+
+        [pscustomobject]@{
+            Module        = $name
+            Role          = $entry.Role
+            Status        = $status
+            Installed     = if ($current) { [string]$current } else { '' }
+            Latest        = if ($newest) { [string]$newest } else { '' }
+            Scope         = if ($copies.Count) { Get-TkModuleScope $copies[0].ModuleBase } else { '' }
+            OtherVersions = $others -join ', '
+            Action        = $action
+            Purpose       = $entry.Purpose
+            SortKey       = '{0}{1}' -f $order[$entry.Role], $name
+        }
+    }
+    $rows | Sort-Object SortKey | Select-Object -Property * -ExcludeProperty SortKey
+}
+
+function Test-TkElevated {
+    <# Whether this PowerShell runs as administrator (needed to update AllUsers modules in place). #>
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    (New-Object Security.Principal.WindowsPrincipal $identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-TkModuleUpdatePlan {
+    <#
+    .SYNOPSIS
+        Turns inventory rows into the installs that fix them: one entry per module with the version
+        and scope to install (Module, From, To, Scope, Note). Nothing is installed here.
+    .PARAMETER Inventory
+        Rows from Get-TkModuleInventory, ideally compared with the gallery so Latest is filled in.
+    .PARAMETER Name
+        Only plan these modules (the rows selected in the GUI). Omit to plan everything that needs it.
+    .PARAMETER Elevated
+        Whether AllUsers copies can be updated in place. Defaults to the current session.
+    #>
+    param(
+        [object[]] $Inventory,
+        [string[]] $Name,
+        [Nullable[bool]] $Elevated
+    )
+    if ($null -eq $Elevated) { $Elevated = Test-TkElevated }
+    $byName = @{}
+    foreach ($row in $Inventory) { if ($row -and $row.Module) { $byName[$row.Module] = $row } }
+    $chosen = if ($Name) { @($Name | ForEach-Object { $byName[$_] } | Where-Object { $_ }) } else { @($Inventory | Where-Object { $_ }) }
+
+    # A version mismatch is fixed by moving Authentication and the sub-module to the latest version.
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($row in $chosen | Where-Object { $_.Status -in 'Missing', 'Update available', 'Version mismatch' }) {
+        if ($row.Status -eq 'Version mismatch' -and -not $candidates.Contains('Microsoft.Graph.Authentication')) { $candidates.Add('Microsoft.Graph.Authentication') }
+        if (-not $candidates.Contains($row.Module)) { $candidates.Add($row.Module) }
+    }
+
+    $plan = foreach ($n in $candidates) {
+        $row = $byName[$n]
+        if (-not $row) { continue }
+        $current = ConvertTo-TkVersion $row.Installed
+        $target = ConvertTo-TkVersion $row.Latest
+        if ($current -and (-not $target -or $current -ge $target)) { continue }    # nothing newer known
+        $scope, $note = switch ([string]$row.Scope) {
+            'AllUsers' {
+                if ($Elevated) { 'AllUsers', '' }
+                else { 'CurrentUser', 'Goes to the current user: updating the all-users copy needs the toolkit to run as administrator.' }
+            }
+            { $_ -in '', 'CurrentUser' } { 'CurrentUser', '' }
+            default { 'CurrentUser', "The installed copy is in a $($row.Scope) folder, so the new version goes to the current user." }
+        }
+        [pscustomobject]@{
+            Module = $n
+            From   = [string]$row.Installed
+            To     = if ($target) { [string]$target } else { 'latest' }
+            Scope  = $scope
+            Note   = $note
+        }
+    }
+
+    # The Microsoft.Graph and Microsoft.Graph.Beta bundles install their sub-modules at the same version.
+    $plan = @($plan)
+    $bundles = @($plan | Where-Object { $_.Module -in 'Microsoft.Graph', 'Microsoft.Graph.Beta' })
+    $plan = @($plan | Where-Object {
+        $item = $_
+        -not @($bundles | Where-Object {
+            $item.Module -like "$($_.Module).*" -and $item.Module -ne 'Microsoft.Graph.Authentication' -and $item.To -eq $_.To -and
+            -not ($_.Module -eq 'Microsoft.Graph' -and $item.Module -like 'Microsoft.Graph.Beta*')
+        }).Count
+    })
+    # Authentication first: every other Graph module depends on it.
+    @($plan | Where-Object Module -eq 'Microsoft.Graph.Authentication') + @($plan | Where-Object Module -ne 'Microsoft.Graph.Authentication')
+}
+
+function Update-TkInstalledModule {
+    <#
+    .SYNOPSIS
+        Installs the versions in an update plan from the PowerShell Gallery, without any prompt.
+        Outputs one row per module with Status Updated, Installed, Failed or WhatIf. Older versions
+        stay side by side and PowerShell loads the newest; sessions that already loaded a module
+        keep the old one until they restart.
+    .PARAMETER Plan
+        Entries from Get-TkModuleUpdatePlan.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)] [object[]] $Plan)
+
+    $install = Get-Command Install-Module -ErrorAction SilentlyContinue
+    if (-not $install) { throw 'Install-Module (PowerShellGet) is not available in this PowerShell.' }
+    $prepared = $false
+
+    foreach ($item in $Plan) {
+        $target = '{0} {1} ({2})' -f $item.Module, $item.To, $item.Scope
+        $result = [ordered]@{ Module = $item.Module; From = $item.From; To = $item.To; Scope = $item.Scope; Status = ''; Message = [string]$item.Note }
+        if (-not $PSCmdlet.ShouldProcess($target, 'Install module from the PowerShell Gallery')) {
+            $result.Status = 'WhatIf'
+            [pscustomobject]$result
+            continue
+        }
+        try {
+            if (-not $prepared) {
+                # Windows PowerShell 5.1 may still default to TLS 1.0, which the gallery refuses.
+                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+                # Install-Module would stop to ask for the NuGet provider; install it up front instead.
+                $nuget = @(Get-PackageProvider -ListAvailable -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'NuGet' -and $_.Version -ge [version]'2.8.5.201' })
+                if (-not $nuget.Count) {
+                    Write-Information 'Installing the NuGet package provider for the current user (Install-Module needs it)...'
+                    [void](Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -ErrorAction Stop)
+                }
+                $prepared = $true
+            }
+            Write-Information "Installing $target from the PowerShell Gallery..."
+            # -Force skips the 'untrusted repository' prompt and installs side by side with older versions.
+            $splat = @{ Name = $item.Module; Scope = $item.Scope; Repository = 'PSGallery'; Force = $true; Confirm = $false; ErrorAction = 'Stop' }
+            if ($item.To -and $item.To -ne 'latest') { $splat.RequiredVersion = $item.To }
+            if ($install.Parameters.ContainsKey('AcceptLicense')) { $splat.AcceptLicense = $true }
+            Install-Module @splat
+            $result.Status = if ($item.From) { 'Updated' } else { 'Installed' }
+            Write-Information "Done: $target"
+        }
+        catch {
+            $result.Status = 'Failed'
+            $result.Message = $_.Exception.Message
+            Write-Warning "Could not install ${target}: $($_.Exception.Message)"
+        }
+        [pscustomobject]$result
+    }
+}
+
+#endregion
+
 #region Results, XAML & logging
 
 function Format-TkValue {
@@ -1167,4 +1459,5 @@ Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm
     ConvertTo-TkFlatObject, ConvertTo-TkDataTable, Import-TkStyle, Import-TkXaml, Write-TkLogFile,
     Split-TkList, ConvertTo-TkLabel, Get-TkSuggestedId, Get-TkScriptAnalysis, New-TkModule, Set-TkModuleTag,
     Get-TkPreference, Save-TkPreference, ConvertTo-TkJson,
-    Get-TkDryRunProfile, ConvertTo-TkCodeLine, Get-TkFileSummary
+    Get-TkDryRunProfile, ConvertTo-TkCodeLine, Get-TkFileSummary,
+    Get-TkModuleInventory, Get-TkGalleryVersion, Test-TkElevated, Get-TkModuleUpdatePlan, Update-TkInstalledModule

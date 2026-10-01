@@ -57,6 +57,10 @@ $State = @{
     Collapsed     = New-TkStringSet       # tree groups the user folded away
     GroupBy       = $preferences.GroupBy
     Viewer        = $null                 # the open script viewer, if any
+    Inventory     = @()                   # rows for the Installed modules tab
+    InventoryJob  = $null                 # scan running in its own runspace, apart from the worker
+    InventoryChecked = $false             # whether the last scan compared with the PowerShell Gallery
+    Elevated      = Test-TkElevated        # AllUsers modules can only be updated in place as administrator
 }
 foreach ($id in $preferences.Favorites) { [void]$State.Favorites.Add($id) }
 
@@ -80,8 +84,10 @@ function Update-Buttons {
     foreach ($name in 'ConnectGraphButton', 'ConnectExoButton', 'DisconnectButton', 'ReloadButton', 'AddModuleButton', 'SaveTagsButton') {
         $ui[$name].IsEnabled = -not $busy
     }
-    $ui.BusyBar.Visibility = if ($busy) { 'Visible' } else { 'Collapsed' }
-    $ui.BusyBar.IsIndeterminate = $busy
+    # A module update runs apart from the worker but takes minutes, so it shows the busy bar too.
+    $showBusy = $busy -or ($State.InventoryJob -and $State.InventoryJob.Kind -eq 'Update')
+    $ui.BusyBar.Visibility = if ($showBusy) { 'Visible' } else { 'Collapsed' }
+    $ui.BusyBar.IsIndeterminate = $showBusy
 }
 
 function Start-UiJob {
@@ -467,6 +473,173 @@ function Show-Results {
     $ui.ExportButton.IsEnabled = $State.Results.Count -gt 0
 }
 
+function Test-GraphSubModule {
+    param($Row)
+    $Row.Module -like 'Microsoft.Graph.*' -and $Row.Module -notin 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Beta'
+}
+
+function Start-InventoryScan {
+    <#
+        Lists the installed M365 PowerShell modules in a throwaway runspace, so the scan (and the
+        gallery lookup) never waits for a module run in the worker and never holds one up.
+    #>
+    param([switch] $CheckGallery)
+    if ($State.InventoryJob) { return }
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.Open()
+    $job = Start-TkJob -Runspace $runspace -Name 'Installed modules' -Parameters @{
+        CorePath     = Join-Path $PSScriptRoot 'Core\Toolkit.Core.psm1'
+        CheckGallery = [bool]$CheckGallery
+    } -ScriptBlock {
+        param($CorePath, $CheckGallery)
+        Import-Module $CorePath
+        Get-TkModuleInventory -CheckGallery:$CheckGallery
+    }
+    $job | Add-Member -NotePropertyMembers @{ Runspace = $runspace; CheckGallery = [bool]$CheckGallery; Kind = 'Scan' }
+    $State.InventoryJob = $job
+    $ui.InventorySummary.Text = if ($CheckGallery) { 'Checking the PowerShell Gallery for newer versions...' } else { 'Scanning installed PowerShell modules...' }
+    Update-InventoryButtons
+    $inventoryTimer.Start()
+}
+
+function Update-InventoryButtons {
+    <# Scan and update share one runspace slot: while either runs, the inventory buttons are off. #>
+    $idle = -not $State.InventoryJob
+    $ui.CheckUpdatesButton.IsEnabled = $idle
+    $ui.RescanModulesButton.IsEnabled = $idle
+    $button = $ui.UpdateModulesButton
+    $selected = @(Get-SelectedInventoryModule)
+    $plan = @(Get-ModuleUpdatePlan)
+    $button.Content = if ($selected.Count) { 'Update selected' } else { 'Update all' }
+    if ($plan.Count) { $button.Content = "$($button.Content) ($($plan.Count))" }
+    $button.IsEnabled = $idle -and $State.InventoryChecked -and $plan.Count -gt 0
+    $button.ToolTip = if (-not $idle) { 'Busy - wait for the current scan or update to finish' }
+        elseif (-not $State.InventoryChecked) { "Click 'Check for updates' first" }
+        elseif (-not $plan.Count -and $selected.Count) { 'The selected modules need no update. Clear the selection to update everything.' }
+        elseif (-not $plan.Count) { 'Everything is up to date' }
+        else { "Install from the PowerShell Gallery: $(@($plan | ForEach-Object { "$($_.Module) $($_.To)" }) -join ', ')" }
+}
+
+function Get-SelectedInventoryModule {
+    $ui.InventoryGrid.SelectedItems | ForEach-Object { [string]$_.Row['Module'] } | Where-Object { $_ }
+}
+
+function Get-ModuleUpdatePlan {
+    <# What the update button would install: the selected rows, or every row when none is selected. #>
+    if (-not $State.Inventory -or -not $State.InventoryChecked) { return }
+    $selected = @(Get-SelectedInventoryModule)
+    if ($selected.Count) { Get-TkModuleUpdatePlan -Inventory $State.Inventory -Name $selected -Elevated $State.Elevated }
+    else { Get-TkModuleUpdatePlan -Inventory $State.Inventory -Elevated $State.Elevated }
+}
+
+function Start-ModuleUpdate {
+    <# Asks first, then installs the planned versions in a throwaway runspace (not the worker, which has modules loaded). #>
+    if ($State.InventoryJob) { return }
+    $plan = @(Get-ModuleUpdatePlan)
+    if (-not $plan.Count) { return }
+    $lines = @($plan | Select-Object -First 12 | ForEach-Object {
+        $from = if ($_.From) { $_.From } else { 'not installed' }
+        "  $($_.Module): $from -> $($_.To) ($($_.Scope))"
+    })
+    if ($plan.Count -gt 12) { $lines += "  ...and $($plan.Count - 12) more" }
+    $notes = @($plan | Where-Object Note | ForEach-Object Note | Select-Object -Unique)
+    $text = "Install these PowerShell modules from the PowerShell Gallery?`n`n$($lines -join "`n")"
+    if ($notes) { $text += "`n`n$($notes -join "`n")" }
+    $text += "`n`nThis can take several minutes (the Microsoft.Graph bundle is large). Older versions are kept. Restart the toolkit afterwards to use the new versions."
+    if ([System.Windows.MessageBox]::Show($text, 'Update modules', 'YesNo', 'Question') -ne 'Yes') { return }
+
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.Open()
+    $job = Start-TkJob -Runspace $runspace -Name 'Update modules' -Parameters @{
+        CorePath = Join-Path $PSScriptRoot 'Core\Toolkit.Core.psm1'
+        Plan     = $plan
+    } -ScriptBlock {
+        param($CorePath, $Plan)
+        Import-Module $CorePath
+        Update-TkInstalledModule -Plan $Plan
+    }
+    $job | Add-Member -NotePropertyMembers @{ Runspace = $runspace; Kind = 'Update' }
+    $State.InventoryJob = $job
+    Write-UiLog 'INFO' "Updating $($plan.Count) PowerShell module(s): $(@($plan | ForEach-Object { "$($_.Module) $($_.To)" }) -join ', ')"
+    $ui.InventorySummary.Text = "Installing $($plan.Count) module(s) from the PowerShell Gallery - progress is on the Log tab..."
+    Update-Buttons
+    Update-InventoryButtons
+    $inventoryTimer.Start()
+}
+
+function Complete-ModuleUpdate {
+    $job = $State.InventoryJob
+    $received = Receive-TkJob -Job $job
+    $done = Complete-TkJob -Job $job
+    $job.Runspace.Dispose()
+    $State.InventoryJob = $null
+    Update-Buttons     # restores the busy bar to the worker's state
+    foreach ($entry in $received.Log) { Write-UiLog $entry.Level $entry.Message }
+
+    $rows = $job.Collected.ToArray()
+    $ok = @($rows | Where-Object { $_.Status -in 'Updated', 'Installed' })
+    $failed = @($rows | Where-Object Status -eq 'Failed')
+    $summary = if ($done.Failure) { "Module update failed: $($done.Failure)" }
+        else { "Module update: $($ok.Count) installed, $($failed.Count) failed." }
+    Write-UiLog $(if ($done.Failure -or $failed.Count) { 'WARN' } else { 'INFO' }) $summary
+    $ui.StatusText.Text = $summary
+    $message = $summary
+    if ($failed.Count) { $message += "`n`nFailed:`n$(@($failed | ForEach-Object { "  $($_.Module): $($_.Message)" }) -join "`n")" }
+    if ($failed.Count -and -not $State.Elevated) { $message += "`n`nTip: some failures need the toolkit to run as administrator." }
+    if ($ok.Count) { $message += "`n`nRestart the toolkit to load the new versions - this session keeps using the old ones." }
+    $icon = if ($done.Failure -or $failed.Count) { 'Warning' } else { 'Information' }
+    [void][System.Windows.MessageBox]::Show($message, 'Update modules', 'OK', $icon)
+    Start-InventoryScan -CheckGallery
+}
+
+function Complete-InventoryScan {
+    $job = $State.InventoryJob
+    $received = Receive-TkJob -Job $job
+    $done = Complete-TkJob -Job $job
+    $job.Runspace.Dispose()
+    $State.InventoryJob = $null
+    Update-InventoryButtons
+    foreach ($entry in $received.Log) { Write-UiLog $entry.Level $entry.Message }
+
+    if ($done.Failure) {
+        $ui.InventorySummary.Text = "Could not list installed modules: $($done.Failure)"
+        Write-UiLog 'ERROR' "Installed modules scan failed: $($done.Failure)"
+        return
+    }
+    $State.Inventory = $job.Collected.ToArray()
+    $State.InventoryChecked = $job.CheckGallery
+    foreach ($row in $State.Inventory | Where-Object Status -eq 'Missing') {
+        Write-UiLog 'WARN' "Required PowerShell module '$($row.Module)' is not installed - see the Installed modules tab."
+    }
+    Update-InventoryView
+}
+
+function Update-InventoryView {
+    $rows = $State.Inventory
+    $showSub = [bool]$ui.ShowGraphSubCheck.IsChecked
+    $shown = @($rows | Where-Object { $showSub -or -not (Test-GraphSubModule $_) })
+    $ui.InventoryGrid.ItemsSource = if ($shown.Count) { (ConvertTo-TkDataTable -FlatObject @(ConvertTo-TkFlatObject -InputObject $shown)).DefaultView } else { $null }
+
+    $attention = @($rows | Where-Object { $_.Status -in 'Missing', 'Update available', 'Version mismatch', 'Retired' })
+    $parts = foreach ($s in 'Missing', 'Update available', 'Version mismatch', 'Retired') {
+        $n = @($attention | Where-Object Status -eq $s).Count
+        if ($n) { '{0} {1}' -f $n, $s.ToLower() }
+    }
+    $installed = @($rows | Where-Object Installed).Count
+    $text = if ($parts) { "$installed installed. Needs attention: $(@($parts) -join ', ')." } else { "$installed installed, nothing needs attention." }
+    if (-not $State.InventoryChecked) { $text += " Click 'Check for updates' to compare with the PowerShell Gallery." }
+    $hidden = @($rows | Where-Object { Test-GraphSubModule $_ })
+    if ($hidden.Count -and -not $showSub) {
+        $hiddenIssues = @($hidden | Where-Object { $_.Status -in 'Update available', 'Version mismatch' }).Count
+        $text += " $($hidden.Count) Graph sub-module(s) hidden" + $(if ($hiddenIssues) { ", $hiddenIssues of them need attention." } else { '.' })
+    }
+    $ui.InventorySummary.Text = $text
+    # Count only visible rows: one Graph update fixes dozens of hidden sub-module rows at once.
+    $visibleIssues = @($attention | Where-Object { $showSub -or -not (Test-GraphSubModule $_) }).Count
+    $ui.InventoryTab.Header = if ($visibleIssues) { "Installed modules ($visibleIssues to fix)" } else { 'Installed modules' }
+    Update-InventoryButtons
+}
+
 #endregion
 
 #region Event handlers
@@ -503,6 +676,36 @@ $timer.Add_Tick({
         Write-UiLog 'ERROR' "Toolkit error while processing job: $($_.Exception.Message)"
     }
 })
+
+# Separate, short-lived heartbeat for the Installed modules scan or update; stops itself when it is done.
+$inventoryTimer = New-Object System.Windows.Threading.DispatcherTimer
+$inventoryTimer.Interval = [TimeSpan]::FromMilliseconds(300)
+$inventoryTimer.Add_Tick({
+    $job = $State.InventoryJob
+    if (-not $job) { $inventoryTimer.Stop(); return }
+    if (-not $job.Handle.IsCompleted) {
+        # An update takes minutes: show its progress as it happens.
+        if ($job.Kind -eq 'Update') { foreach ($entry in (Receive-TkJob -Job $job).Log) { Write-UiLog $entry.Level $entry.Message } }
+        return
+    }
+    $inventoryTimer.Stop()
+    try {
+        if ($job.Kind -eq 'Update') { Complete-ModuleUpdate } else { Complete-InventoryScan }
+    }
+    catch {
+        $State.InventoryJob = $null
+        Update-Buttons
+        Update-InventoryButtons
+        Write-UiLog 'ERROR' "Toolkit error while handling installed modules: $($_.Exception.Message)"
+    }
+})
+
+$ui.RescanModulesButton.Add_Click({ Start-InventoryScan -CheckGallery:$State.InventoryChecked })
+$ui.CheckUpdatesButton.Add_Click({ Start-InventoryScan -CheckGallery })
+$ui.UpdateModulesButton.Add_Click({ Start-ModuleUpdate })
+$ui.InventoryGrid.Add_SelectionChanged({ Update-InventoryButtons })
+$ui.ShowGraphSubCheck.Add_Checked({ Update-InventoryView })
+$ui.ShowGraphSubCheck.Add_Unchecked({ Update-InventoryView })
 
 $ui.ModuleTree.Add_SelectedItemChanged({
     $item = $ui.ModuleTree.SelectedItem
@@ -681,7 +884,7 @@ $ui.ExportButton.Add_Click({
     }
 })
 
-$ui.Window.Add_ContentRendered({ Update-ConnectionStatus })
+$ui.Window.Add_ContentRendered({ Update-ConnectionStatus; Start-InventoryScan })
 
 # Safety net: an exception escaping any event handler would otherwise terminate the whole app.
 $ui.Window.Dispatcher.Add_UnhandledException({
@@ -690,8 +893,17 @@ $ui.Window.Dispatcher.Add_UnhandledException({
 })
 
 $ui.Window.Add_Closing({
+    # Stopping Install-Module halfway can leave a broken module folder behind.
+    if ($State.InventoryJob -and $State.InventoryJob.Kind -eq 'Update') {
+        $answer = [System.Windows.MessageBox]::Show(
+            "PowerShell modules are still being installed. Closing now can leave a module half installed.`n`nClose anyway?",
+            'Update in progress', 'YesNo', 'Warning')
+        if ($answer -ne 'Yes') { $_.Cancel = $true; return }
+    }
     $timer.Stop()
+    $inventoryTimer.Stop()
     if ($State.Job) { Stop-TkJob -Job $State.Job }
+    if ($State.InventoryJob) { Stop-TkJob -Job $State.InventoryJob }
     Write-TkLogFile -Path $State.LogFile -Level 'INFO' -Message 'Toolkit closed.'
 })
 

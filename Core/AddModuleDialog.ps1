@@ -162,6 +162,10 @@ function Show-TkAddModuleDialog {
         if ($id -notmatch '^[A-Za-z][A-Za-z0-9]*(\.[A-Za-z][A-Za-z0-9]*)+$') { $problems += "The Id must look like 'Area.TaskName'." }
         elseif ($existingIds -contains $id) { $problems += "The Id '$id' is already used by another module." }
         if ($path -and -not $dlg.Analysis) { $problems += 'The selected script could not be read - see the message above.' }
+        # Without scopes the toolkit never connects to Graph, so every Graph call in the script would fail.
+        if ($dlg.Analysis -and $dlg.Analysis.UsesGraph -and -not @(Split-TkList $d.GraphScopesBox.Text -Separator '[,\s]+').Count) {
+            $problems += 'The script uses Microsoft Graph - enter the scopes it needs under Connections.'
+        }
         if ($problems) { $d.DialogStatus.Text = $problems -join ' '; return }
 
         $request = @{

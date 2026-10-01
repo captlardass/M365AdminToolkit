@@ -85,6 +85,38 @@ system settings.
 
 To use another tenant, click **Disconnect all** and connect again with an account in that tenant.
 
+### Checking installed PowerShell modules
+
+The **Installed modules** tab lists the Microsoft 365 PowerShell modules on this PC: the two the toolkit
+needs, common optional ones (Microsoft Graph SDK, Teams, PnP, SharePoint Online, Az.Accounts) and retired
+ones (AzureAD, MSOnline) if they are still installed. It scans when the toolkit starts. Scanning never
+changes anything; only the **Update** button does, and it asks first.
+
+| Status | Meaning |
+|---|---|
+| Missing | A module the toolkit needs is not installed |
+| Update available | The PowerShell Gallery has a newer version |
+| Version mismatch | A Graph sub-module is on a different version than `Microsoft.Graph.Authentication`, a common cause of assembly errors |
+| Retired | Microsoft has retired the module. Move scripts to Microsoft Graph |
+| Up to date / Installed | Nothing to do (*Installed* means the gallery hasn't been checked) |
+
+Click **Check for updates** to compare the versions with the PowerShell Gallery (this needs internet access).
+Graph SDK sub-modules are hidden unless you tick **Show Graph sub-modules**. The summary line still counts them.
+
+After checking, click **Update all** to install the latest version of every module that is *Missing*, has an
+*Update available* or a *Version mismatch*. If you select rows first, the button changes to **Update selected**
+and only updates those. A version mismatch always brings `Microsoft.Graph.Authentication` along. When the
+`Microsoft.Graph` bundle is updated, its sub-modules come with it.
+
+- You confirm the list of modules and versions first. Progress shows on the **Log** tab. Installing the
+  Graph bundle takes several minutes.
+- Modules are installed with `Install-Module -Force` from the PowerShell Gallery, so nothing prompts. Older
+  versions stay installed next to the new ones, and PowerShell loads the newest.
+- Modules installed for all users can only be updated in place when the toolkit runs as administrator.
+  Otherwise the new version is installed for the current user, and the confirmation says so.
+- Retired modules are never removed automatically. Move the scripts that use them to Microsoft Graph first.
+- **Restart the toolkit afterwards.** The running session keeps the module versions it already loaded.
+
 ## Included modules
 
 | Module | Category | What it does |
@@ -129,6 +161,8 @@ crash the app.
   `Get-Credential` or `Out-GridView`: there is no console to answer them.
 - **Don't connect or disconnect.** Remove `Connect-MgGraph` / `Connect-ExchangeOnline` and the matching
   `Disconnect-*` calls. The toolkit signs in before your script runs and keeps the session for the next one.
+- **Declare the Graph scopes in a comment**, e.g. `# GraphScopes: User.Read.All, Organization.Read.All`.
+  The Add module dialog then fills them in. Without scopes the toolkit doesn't connect to Graph at all.
 - **Output objects, not text.** Each object becomes a row in the grid and the CSV.
 - **Log with `Write-Information` and `Write-Warning`.** Throw an error to fail the run.
 - **Support WhatIf if your script changes things.** Use `[CmdletBinding(SupportsShouldProcess)]` and wrap each
@@ -231,7 +265,7 @@ Only certificate authentication is supported. Client secrets are deliberately no
 | Piece | File | Role |
 |---|---|---|
 | Launcher | `Start-Toolkit.ps1` | Window wiring, event handlers and GUI state |
-| Engine | `Core\Toolkit.Core.psm1` | Discovery, contract validation, form builder, job runner, result flattening |
+| Engine | `Core\Toolkit.Core.psm1` | Discovery, contract validation, form builder, job runner, result flattening, installed-modules inventory |
 | Worker | `Core\Toolkit.Worker.ps1` | Connections, change guard, runs modules. Loaded into the worker |
 | Dialogs | `Core\AddModuleDialog.ps1`, `Core\ScriptViewer.ps1` | *+ Add module* and *View script* |
 | Layout | `Core\*.xaml` | WPF markup and styles |
@@ -252,7 +286,7 @@ Only certificate authentication is supported. Client secrets are deliberately no
 | Problem | Fix |
 |---|---|
 | *Scripts are blocked* / *not digitally signed* | Run `Unblock-File` on the folder (see [Installation](#installation)) |
-| Graph and Exchange together fail with an assembly or MSAL error | Known conflict between the two modules in Windows PowerShell 5.1. Connect to Exchange first, or run under PowerShell 7 |
+| Graph and Exchange together fail with an assembly or MSAL error | Known conflict between the two modules in Windows PowerShell 5.1. Connect to Exchange first, or run under PowerShell 7. Also check *Installed modules* for Graph version mismatches |
 | A module shows in red | Select it to see the problems, or run `.\Tools\Test-ToolkitModules.ps1` |
 | A run finishes with 0 results and an error | Check the *Log* tab. The error is from the module script |
 | Strange characters in output or errors | Save the script as ASCII or UTF-8 with BOM |
