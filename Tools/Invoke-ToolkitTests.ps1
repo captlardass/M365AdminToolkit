@@ -21,7 +21,7 @@ Write-Host '== Module contract' -ForegroundColor Cyan
 & (Join-Path $PSScriptRoot 'Test-ToolkitModules.ps1') -IncludeTemplate
 if ($LASTEXITCODE) { $global:TkTestFailures++ }
 
-foreach ($suite in 'Guard', 'Viewer', 'Inventory', 'Installer') {
+foreach ($suite in 'Guard', 'Viewer', 'Inventory', 'Installer', 'Theme', 'Release') {
     Write-Host "== $suite suite" -ForegroundColor Cyan
     # Each suite in its own process: the guard hooks command lookup and must start from a clean runspace.
     powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File (Join-Path $root "Tests\$suite.Tests.ps1") -Root $root |

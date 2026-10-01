@@ -102,6 +102,13 @@ system settings.
 
 To use another tenant, click **Disconnect all** and connect again with an account in that tenant.
 
+### Light and dark mode
+
+The toolkit follows the Windows app mode (*Settings > Personalisation > Colours > Choose your app mode*).
+If you change it while the toolkit is open, the toolkit switches when you return to its window. To always
+use one mode, pick **Light** or **Dark** in the **Theme** box at the bottom right. **Match Windows** goes back
+to following Windows. The choice is saved per user.
+
 ### Checking installed PowerShell modules
 
 The **Installed modules** tab lists the Microsoft 365 PowerShell modules on this PC: the two the toolkit
@@ -269,6 +276,55 @@ must be in your certificate store. Leave the values empty for interactive sign-i
 
 Only certificate authentication is supported. Client secrets are deliberately not supported.
 `settings.json` is git-ignored and must never be committed.
+
+## Releases, checksums and signing
+
+### Checking a download
+
+Every release ZIP comes with a `M365AdminToolkit-<version>.SHA256SUMS.txt` file. Before you install, check
+that the ZIP is the one that was published:
+
+```powershell
+(Get-FileHash .\M365AdminToolkit-1.0.0.zip -Algorithm SHA256).Hash   # must match SHA256SUMS.txt (case doesn't matter)
+```
+
+If the scripts are signed, also check who signed them after extracting:
+
+```powershell
+Get-AuthenticodeSignature .\M365AdminToolkit\Start-Toolkit.ps1 | Format-List Status, SignerCertificate
+```
+
+`Status` must be `Valid`. A checksum proves the file hasn't changed. Only a signature proves who published it.
+
+### Making a release (maintainers)
+
+1. Commit everything and tag the version, using [semantic versioning](https://semver.org):
+
+   ```powershell
+   git tag -a v1.0.0 -m "M365 Admin Toolkit 1.0.0"
+   git push origin v1.0.0
+   ```
+
+2. Build the release. Add `-CertificateThumbprint` to sign the scripts with a code-signing certificate:
+
+   ```powershell
+   .\Tools\New-ToolkitRelease.ps1 -Version 1.0.0
+   .\Tools\New-ToolkitRelease.ps1 -Version 1.0.0 -CertificateThumbprint <thumbprint>
+   ```
+
+   The script packages exactly the tagged commit. Local changes, tests and git-ignored (private) modules are
+   never included. It signs the scripts with a timestamp, so the signatures stay valid after the certificate
+   expires. Then it zips the package and writes the SHA-256 of the final ZIP, so the checksum covers the signed
+   files. It never overwrites a version that has already been built.
+
+3. Create a GitHub release for the tag and upload both files from `Release\`. Publish the checksum on the
+   release page too.
+
+You need a code-signing certificate to sign. Use your organisation's internal PKI for internal use, or a
+public CA or Azure Trusted Signing for public releases. Don't use a self-signed certificate: other PCs won't
+trust it, and the build stops when a signature isn't `Valid`. Keep the certificate and its private key out of
+the repository. The `.cmd` launchers can't carry a signature; the Start menu shortcut runs `Start-Toolkit.ps1`
+directly.
 
 ## How it works
 

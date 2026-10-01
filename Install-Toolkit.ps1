@@ -54,7 +54,7 @@ $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M365A
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 # What belongs to the program: replaced on upgrade, removed on uninstall. Everything else is user data.
 $programItems = 'Core', 'Tools', 'Start-Toolkit.ps1', 'Start-Toolkit.cmd', 'Install-Toolkit.ps1', 'Install-Toolkit.cmd',
-    'README.md', 'Config\settings.example.json'
+    'README.md', 'VERSION', 'Config\settings.example.json'
 if (-not $Destination) { $Destination = Join-Path $env:LOCALAPPDATA 'Programs\M365AdminToolkit' }
 $Destination = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($Destination).TrimEnd('\')
 $shortcuts = @{
@@ -159,6 +159,10 @@ function Install-Toolkit {
             DisplayIcon     = "$powershell,0"
             UninstallString = "`"$powershell`" -NoProfile -ExecutionPolicy RemoteSigned -File `"$Destination\Install-Toolkit.ps1`" -Uninstall -Destination `"$Destination`" -ShowSummary"
         }
+        # Release ZIPs carry a VERSION file (Tools\New-ToolkitRelease.ps1); a git clone doesn't.
+        $versionFile = Join-Path $Destination 'VERSION'
+        if (Test-Path -LiteralPath $versionFile) { $values.DisplayVersion = (Get-Content -LiteralPath $versionFile -TotalCount 1).Trim() }
+        else { Remove-ItemProperty -Path $uninstallKey -Name DisplayVersion -ErrorAction SilentlyContinue }
         foreach ($name in $values.Keys) { [void](New-ItemProperty -Path $uninstallKey -Name $name -Value $values[$name] -PropertyType String -Force) }
         foreach ($name in 'NoModify', 'NoRepair') { [void](New-ItemProperty -Path $uninstallKey -Name $name -Value 1 -PropertyType DWord -Force) }
         [void](New-ItemProperty -Path $uninstallKey -Name EstimatedSize -Value $sizeKb -PropertyType DWord -Force)

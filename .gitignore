@@ -1,6 +1,7 @@
 Config/settings.json
 Logs/
 *.csv
+Release/
 
 # Your own modules stay on this PC; only the samples are shared.
 Modules/*

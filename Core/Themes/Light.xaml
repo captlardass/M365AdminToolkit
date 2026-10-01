@@ -76,6 +76,5 @@
     <!-- Built-in templates (tree, grid cells) draw selection with these system keys. -->
     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2563EB"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#E5E7EB"/>
-    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#111827"/>
+    <!-- Inactive selection keeps the system colours: WPF maps InactiveSelectionHighlight*BrushKey to Control*BrushKey. -->
 </ResourceDictionary>

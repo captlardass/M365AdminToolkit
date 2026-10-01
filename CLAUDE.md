@@ -17,6 +17,10 @@ Read README.md for the architecture and the module contract.
 - Modules in `Modules/` may be the user's own work - don't edit ones you didn't create unless asked.
 - `Modules/` is git-ignored except `_Template` and `Demo.SelfTest`: the user's modules stay private. Never un-ignore or `git add -f` them.
 
+## Releases
+- Build with `Tools/New-ToolkitRelease.ps1` only: it packages a tagged commit, signs, then hashes. Order matters - hash after signing.
+- Never overwrite or rebuild a published version; bump the version. Never commit certificates, keys or thumbprints.
+
 ## Installer
 - `Install-Toolkit.ps1` keeps a `$programItems` list (replaced on upgrade, removed on uninstall). Add new top-level program files or folders there; anything not listed is treated as user data.
 - Upgrades must never overwrite `Config/settings.json`, `Logs/` or newer module files in the installed copy.
@@ -33,5 +37,7 @@ Read README.md for the architecture and the module contract.
 - Don't name helper functions after aliases (`Select`, `Where`, `Sort`...) - aliases win.
 - `-WhatIf` doesn't flow from a script into `.psm1` functions; pass `-WhatIf:$WhatIfPreference` explicitly.
 - ToggleButtons: react to Checked/Unchecked, not Click, so keyboard and UI Automation work. Give panel-based rows an `AutomationProperties.Name`.
-- Personal preferences (favourites, group-by) go in `%APPDATA%\M365AdminToolkit\preferences.json`, never in the toolkit folder.
+- Colours: never literals in XAML or code. Use `{DynamicResource Tk.*}` names from `Core/Themes/Light.xaml` + `Dark.xaml` (add new names to both), and `SetResourceReference(...)` instead of assigning brushes in code, so the theme can switch live. Tests/Theme.Tests.ps1 checks this.
+- Built-in WPF templates hard-code light colours: new control types need a themed style in `Core/Styles.xaml`.
+- Personal preferences (favourites, group-by, theme) go in `%APPDATA%\M365AdminToolkit\preferences.json`, never in the toolkit folder.
 - Never put real tenant data, UPNs, usernames or secrets in code, manifests, examples or tests - use contoso.example placeholders.

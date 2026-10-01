@@ -76,11 +76,10 @@
     <!-- Built-in templates (tree, grid cells, text box menus, scroll corners) read these system keys. -->
     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2563EB"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#343944"/>
-    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#E6E8EB"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}" Color="#1E2128"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}" Color="#E6E8EB"/>
-    <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#1E2128"/>
+    <!-- WPF uses the same keys for inactive selection (InactiveSelectionHighlight*BrushKey) as for Control*. -->
+    <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#343944"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.ControlTextBrushKey}" Color="#E6E8EB"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.GrayTextBrushKey}" Color="#6B7280"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.MenuBrushKey}" Color="#2A2E37"/>
