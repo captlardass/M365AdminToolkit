@@ -351,7 +351,8 @@ directly.
   Jobs run one at a time.
 - **The worker never touches the UI.** The UI thread polls the job's streams, so there are no cross-thread calls.
 - **Change guard.** In a dry run or a read-only module, the worker intercepts Microsoft 365 write commands and
-  non-GET REST calls before they run, and reports them as blocked. It can't see changes made by other
+  non-GET REST calls before they run, and reports them as blocked. Exchange Online's own REST calls for
+  `Get-*` cmdlets (EXO v3 sends every classic cmdlet as a POST) are recognised as reads and let through. It can't see changes made by other
   processes or by .NET web clients. The GUI tells you when a module does something it can't guard.
 - **Privacy.** The log file in `Logs\` records which module ran and *which* inputs were supplied, never the
   values. Personal preferences such as favourites and grouping are stored in
