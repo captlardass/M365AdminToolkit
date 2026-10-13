@@ -4,7 +4,7 @@
   "Category": "Toolkit",
   "Tags": ["Testing"],
   "Description": "Generates dummy results without touching any tenant. Use it to check that the GUI, logging, dry-run, cancel and CSV export all work.",
-  "Version": "1.0.0",
+  "Version": "1.1.0",
   "Author": "M365 Admin Toolkit",
   "EntryPoint": "module.ps1",
   "SupportsWhatIf": true,

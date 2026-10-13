@@ -8,6 +8,11 @@ Read README.md for the architecture and the module contract.
 - `module.json` Parameters must match the script `param()` block exactly (names; Mandatory <=> Required).
 - Anything that changes tenant state: `SupportsWhatIf: true` + `$PSCmdlet.ShouldProcess`, and output a row with Status `WhatIf`.
 - Modules that only read: set `"ReadOnly": true` so the change guard enforces it on every run.
+- Tenant readiness: if a module can prove a security-posture factor ("X of Y users have a passkey"), add
+  `if (Test-Path Function:\Write-TkReadiness) { Write-TkReadiness -Ready -Total -Label [-NotEvaluated] }` once at the end.
+  Count the whole population checked, not just the rows output; anything unchecked goes in -NotEvaluated, never in Ready/Total.
+  Don't invent a rule where there is no clear "ready" (e.g. a change module or a plain inventory) - ask the user first.
+  Optional thresholds in module.json: `"Readiness": { "Pass": 90, "Warn": 70 }`. See README "Tenant readiness".
 - The change guard (Toolkit.Worker.ps1) is safety-critical: after touching it, rerun the guard test suite and keep "fail closed" behaviour (block when unsure).
 - Don't call commands via `& (Get-Command X)` in modules: it bypasses the dry-run guard.
 - Tags: reuse existing tags before inventing new ones; short, no commas.

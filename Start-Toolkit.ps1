@@ -57,6 +57,8 @@ $State = @{
     Collapsed     = New-TkStringSet       # tree groups the user folded away
     GroupBy       = $preferences.GroupBy
     Theme         = $preferences.Theme     # System (follow Windows), Light or Dark
+    ReadinessView = $preferences.ReadinessView   # Percent (with counts) or Rating (Pass/Warn/Fail)
+    ReadinessByModule = @{}               # module Id -> last run's readiness (Get-TkReadiness + Finished); this session only
     Viewer        = $null                 # the open script viewer, if any
     Inventory     = @()                   # rows for the Installed modules tab
     InventoryJob  = $null                 # scan running in its own runspace, apart from the worker
@@ -135,6 +137,7 @@ function Save-Preferences {
             Favorites = [string[]]@($State.Favorites | Sort-Object)
             GroupBy   = $State.GroupBy
             Theme     = $State.Theme
+            ReadinessView = $State.ReadinessView
         })
     }
     catch { Write-UiLog 'WARN' "Could not save preferences: $($_.Exception.Message)" }
@@ -358,6 +361,7 @@ function Clear-ModuleView {
         $ui[$name].Visibility = 'Collapsed'
     }
     if ($State.Viewer) { $State.Viewer.Ui.Window.Close() }
+    Show-Readiness
     Update-Buttons
 }
 
@@ -468,6 +472,7 @@ function Show-Module {
         $State.ParamControls = $null
     }
     Update-DryRunOption $Module
+    Show-Readiness
     Update-Buttons
 }
 
@@ -478,6 +483,44 @@ function Show-Results {
     $ui.ResultGrid.ItemsSource = (ConvertTo-TkDataTable -FlatObject $State.Results).DefaultView
     $ui.ResultCount.Text = '{0} result(s) from {1}' -f $State.Results.Count, $From
     $ui.ExportButton.IsEnabled = $State.Results.Count -gt 0
+}
+
+function Show-Readiness {
+    <#
+        The Tenant readiness box beside the inputs, for the selected module's last run in this session.
+        Hidden (inputs take the full width) when that module has no figure.
+    #>
+    $r = if ($State.Current) { $State.ReadinessByModule[$State.Current.Id] }
+    if (-not $r) {
+        $ui.ReadinessCard.Visibility = 'Collapsed'
+        $ui.ReadinessColumn.Width = New-Object System.Windows.GridLength 0
+        return
+    }
+
+    # Ring: an ellipse stroke dashed to the share, in stroke-thickness units, around the ellipse's centre line.
+    $ring = $ui.ReadinessRing
+    $circumference = [math]::PI * ($ui.ReadinessGauge.Width - $ring.StrokeThickness)
+    $dash = $circumference * $r.Percent / 100 / $ring.StrokeThickness
+    $ring.StrokeDashArray = New-Object System.Windows.Media.DoubleCollection (, [double[]]@($dash, 1000))
+    $brush = switch ($r.Rating) { 'Pass' { 'Tk.ReadinessPass' } 'Warn' { 'Tk.ReadinessWarn' } default { 'Tk.ReadinessFail' } }
+    $ring.SetResourceReference([System.Windows.Shapes.Shape]::StrokeProperty, $brush)
+
+    $percent = '{0}%' -f $r.Percent
+    $rating = $r.Rating.ToUpperInvariant()
+    $big, $small = if ($State.ReadinessView -eq 'Rating') { $rating, $percent } else { $percent, $rating }
+    $ui.ReadinessBig.Text = $big
+    $ui.ReadinessSmall.Text = $small
+    $ui.ReadinessSmall.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $brush)
+    [System.Windows.Automation.AutomationProperties]::SetName($ui.ReadinessGauge, "Readiness $($r.Percent) percent, $($r.Rating)")
+
+    $ui.ReadinessLabel.Text = '{0} of {1} {2}' -f $r.Ready, $r.Total, $r.Label
+    $ui.ReadinessNotEvaluated.Text = "$($r.NotEvaluated) not evaluated"
+    $ui.ReadinessNotEvaluated.Visibility = if ($r.NotEvaluated) { 'Visible' } else { 'Collapsed' }
+    $ui.ReadinessThresholds.Text = 'Pass: {0}%+     Warn: {1}%+     Fail: below {1}%' -f $r.Pass, $r.Warn
+    $ui.ReadinessSource.Text = 'Last run {0:HH:mm}' -f $r.Finished
+
+    $ui.ReadinessColumn.Width = New-Object System.Windows.GridLength 1, ([System.Windows.GridUnitType]::Star)
+    $ui.ReadinessCard.Visibility = 'Visible'
 }
 
 function Test-GraphSubModule {
@@ -832,6 +875,9 @@ $ui.RunButton.Add_Click({
     $ui.ResultGrid.ItemsSource = $null
     $ui.ExportButton.IsEnabled = $false
     $ui.ResultCount.Text = 'Running...'
+    # Never show an old figure next to a run in progress.
+    $State.ReadinessByModule.Remove($module.Id)
+    Show-Readiness
     Show-Blocked -Entries @() -Guard $guard
     $modeText = switch ($guard) { 'DryRun' { 'DRY RUN - Microsoft 365 changes are blocked' } 'ReadOnly' { 'read-only run - changes are blocked' } default { 'REAL RUN - changes will be made' } }
     Write-UiLog 'INFO' "Mode: $modeText"
@@ -840,7 +886,7 @@ $ui.RunButton.Add_Click({
     Write-TkLogFile -Path $State.LogFile -Level 'INFO' -Message "Run $($module.Id) v$($module.Version) mode=$guard with inputs: $suppliedNames"
 
     $jobName = if ($guard -eq 'DryRun') { "$($module.Name) (dry run)" } else { $module.Name }
-    Start-UiJob -Name $jobName -Cancellable -Data @{ Guard = $guard; Native = $module.SupportsWhatIf; ModuleName = $module.Name } -Parameters @{
+    Start-UiJob -Name $jobName -Cancellable -Data @{ Guard = $guard; Native = $module.SupportsWhatIf; ModuleName = $module.Name; ModuleId = $module.Id; Readiness = $module.Readiness } -Parameters @{
         EntryPath  = $module.EntryPath
         Requires   = $module.Requires
         Parameters = $parameters
@@ -851,6 +897,17 @@ $ui.RunButton.Add_Click({
     } -OnComplete {
         param($Done, $Output, $Blocked, $Job)
         Show-Results -Objects $Output -From $Job.Data.ModuleName
+        # A failed or cancelled run may have counted only part of the tenant: show no score rather than a wrong one.
+        $complete = $Done.State -eq 'Completed' -and -not $Done.Failure
+        $readiness = if ($complete) { Get-TkReadiness -Report $Job.Readiness -Threshold $Job.Data.Readiness }
+        if ($readiness) {
+            $readiness | Add-Member -NotePropertyName Finished -NotePropertyValue (Get-Date)
+            $State.ReadinessByModule[$Job.Data.ModuleId] = $readiness
+            Write-UiLog 'INFO' "Readiness: $($readiness.Percent)% ($($readiness.Rating))"
+        }
+        else { $State.ReadinessByModule.Remove($Job.Data.ModuleId) }
+        # Only redraw if the module that ran is still the one on screen.
+        if ($State.Current -and $State.Current.Id -eq $Job.Data.ModuleId) { Show-Readiness }
         Show-Blocked -Entries $Blocked -Guard $Job.Data.Guard -Native $Job.Data.Native -ModuleName $Job.Data.ModuleName
         if ($Job.Data.Guard -ne 'Off') {
             # Counts only - the entries themselves stay on screen.
@@ -900,6 +957,10 @@ $ui.ThemeBox.Add_SelectionChanged({
     Save-Preferences
     Sync-Theme
 })
+# Readiness view: set before hooking up, like the theme box. Checked/Unchecked so keyboard and UI Automation work.
+$ui.ReadinessViewButton.IsChecked = $State.ReadinessView -eq 'Rating'
+$ui.ReadinessViewButton.Add_Checked({ $State.ReadinessView = 'Rating'; Save-Preferences; Show-Readiness })
+$ui.ReadinessViewButton.Add_Unchecked({ $State.ReadinessView = 'Percent'; Save-Preferences; Show-Readiness })
 # Coming back to the toolkit after changing Windows' light/dark mode picks up the new mode.
 $ui.Window.Add_Activated({ if ($State.Theme -eq 'System') { Sync-Theme } })
 

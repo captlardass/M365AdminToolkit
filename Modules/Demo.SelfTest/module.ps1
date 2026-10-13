@@ -27,6 +27,11 @@ for ($i = 1; $i -le $Count; $i++) {
     Start-Sleep -Milliseconds 300
 }
 
+# Tenant readiness: shown next to the result count (try the Pass / Warn / Fail toggle). Even rows are licensed.
+if ($Count -gt 0 -and (Test-Path Function:\Write-TkReadiness)) {
+    Write-TkReadiness -Ready ([math]::Floor($Count / 2)) -Total $Count -Label 'sample users are licensed'
+}
+
 if ($EmitWarning) { Write-Warning 'This is what a warning looks like in the log.' }
 if ($Fail) { throw 'Failure requested - this is how a terminating error surfaces.' }
 

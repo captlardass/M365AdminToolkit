@@ -60,6 +60,13 @@ try {
     $item = New-Object System.Windows.Controls.TreeViewItem
     $item.Header = 'Group'; [void]$item.Items.Add('Child'); $item.IsExpanded = $true
     [void]$main.ModuleTree.Items.Add($item)
+    # The Tenant readiness box, filled the way Show-Readiness does, so it is laid out in both themes too.
+    $main.ReadinessColumn.Width = New-Object System.Windows.GridLength 1, ([System.Windows.GridUnitType]::Star)
+    $main.ReadinessCard.Visibility = 'Visible'
+    $main.ReadinessRing.StrokeDashArray = New-Object System.Windows.Media.DoubleCollection (, [double[]]@(20.5, 1000))
+    $main.ReadinessRing.SetResourceReference([System.Windows.Shapes.Shape]::StrokeProperty, 'Tk.ReadinessWarn')
+    $main.ReadinessBig.Text = '73%'; $main.ReadinessSmall.Text = 'WARN'
+    $main.ReadinessLabel.Text = '146 of 200 users have a passkey'; $main.ReadinessNotEvaluated.Text = '3 not evaluated'
     $windows = @($main.Window, (Import-TkXaml -Path "$Root\Core\AddModuleWindow.xaml").Window, (Import-TkXaml -Path "$Root\Core\ScriptViewerWindow.xaml").Window)
 
     foreach ($theme in 'Dark', 'Light', 'Dark') {
@@ -77,6 +84,11 @@ try {
     $lightBackground = [string]$main.Window.Background
     Check 'Open windows recolour live' ($darkBackground -eq '#FF16181D' -and $lightBackground -eq '#FFF3F4F6') "dark=$darkBackground light=$lightBackground"
     Check 'Get-TkTheme reports the current theme' ((Get-TkTheme) -eq 'Light') (Get-TkTheme)
+    Check 'Readiness box takes space beside the inputs' ($main.ReadinessCard.ActualWidth -gt 300 -and $main.ReadinessRing.ActualWidth -eq 150) "card=$($main.ReadinessCard.ActualWidth) ring=$($main.ReadinessRing.ActualWidth)"
+    $ringLight = [string]$main.ReadinessRing.Stroke
+    Set-TkTheme -Theme Dark
+    Check 'Readiness ring recolours with the theme' ($ringLight -ne [string]$main.ReadinessRing.Stroke) "light=$ringLight dark=$($main.ReadinessRing.Stroke)"
+    Set-TkTheme -Theme Light
 
     # Title bar: needs a window handle. EnsureHandle creates one without showing anything.
     [void](New-Object System.Windows.Interop.WindowInteropHelper $main.Window).EnsureHandle()

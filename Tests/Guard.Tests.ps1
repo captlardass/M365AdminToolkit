@@ -39,6 +39,9 @@ function Invoke-Probe {
         Blocked  = $blocked
         Executed = @(Get-Content -LiteralPath $env:TK_PROBE_LOG | Where-Object { $_ })
         Errors   = @($log | Where-Object Level -eq 'ERROR' | ForEach-Object Message)
+        Warnings = @($log | Where-Object Level -eq 'WARN' | ForEach-Object Message)
+        Info     = @($log | Where-Object Level -eq 'INFO' | ForEach-Object Message)
+        Readiness = $job.Readiness
     }
 }
 
@@ -198,6 +201,27 @@ $call = ConvertTo-TkCallArgument -Command (Get-Command Invoke-WebRequest) -Argum
 '{0} {1}' -f $call.Named['Body'].GetType().Name, $call.Named['Body'].Count
 '@
 Check 'Proxied arguments keep their type (byte[] body reaches the real cmdlet intact)' ($r.Output -contains 'Byte[] 3') ($r.Output -join ';')
+
+# 16. Tenant readiness travels apart from the grid rows and the log; the last report wins.
+$r = Invoke-Probe 'readiness' -Guard ReadOnly -Script @'
+Write-TkReadiness -Ready 1 -Total 2 -Label 'first report'
+Write-TkReadiness -Ready 146 -Total 200 -NotEvaluated 3 -Label 'users have a passkey'
+'row'
+'@
+$rd = $r.Readiness
+Check 'Readiness reaches the job, not the grid or the log' ($rd -and $rd.Ready -eq 146 -and $rd.Total -eq 200 -and $rd.NotEvaluated -eq 3 -and
+    $r.Output.Count -eq 1 -and -not @($r.Info | Where-Object { $_ -match 'passkey|first report' }).Count) "readiness=$($rd | ConvertTo-Json -Compress) output=$($r.Output -join ';') info=$($r.Info -join ' / ')"
+$shown = Get-TkReadiness -Report $rd
+Check 'Readiness from the worker turns into a figure (73%, Warn)' ($shown.Percent -eq 73 -and $shown.Rating -eq 'Warn') ($shown | ConvertTo-Json -Compress)
+
+# 17. Fail closed: an impossible figure is not reported, the module is told why, and the run still completes.
+$r = Invoke-Probe 'readiness-invalid' -Guard ReadOnly -Script @'
+Write-TkReadiness -Ready 5 -Total 4 -Label 'more ready than checked'
+Write-TkReadiness -Ready 0 -Total 0 -Label 'nothing checked'
+Write-TkReadiness -Ready -1 -Total 4 -Label 'negative'
+'done'
+'@
+Check 'Impossible readiness figures are not reported (Ready > Total, Total 0, negative)' ($null -eq $r.Readiness -and $r.Warnings.Count -eq 3 -and $r.Output -contains 'done') "readiness=$($r.Readiness | ConvertTo-Json -Compress) warnings=$($r.Warnings.Count)"
 
 $worker.Dispose()
 $results | Format-Table -AutoSize -Wrap | Out-String -Width 220

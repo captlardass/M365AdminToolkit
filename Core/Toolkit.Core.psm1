@@ -16,6 +16,8 @@
 $script:ParameterTypes = @('String', 'List', 'Bool', 'Choice', 'Int')
 $script:ManifestFields = @('Id', 'Name', 'Category', 'Description', 'Version', 'EntryPoint')
 $script:ReservedNames  = @('WhatIf', 'Confirm', 'Verbose', 'Debug', 'ErrorAction', 'InformationAction')
+# Tenant readiness: Pass at or above Pass %, Warn at or above Warn %, otherwise Fail. module.json "Readiness" overrides.
+$script:ReadinessDefault = [pscustomobject]@{ Pass = 90; Warn = 70 }
 
 #region Discovery & validation
 
@@ -34,6 +36,54 @@ function ConvertTo-TkParameterDefinition {
         Default  = $Parameter.Default
         Options  = @($Parameter.Options | Where-Object { $null -ne $_ })
         HelpText = [string]$Parameter.HelpText
+    }
+}
+
+function Test-TkReadinessThreshold {
+    <# Problems with a module.json "Readiness" block: { "Pass": 0-100, "Warn": 0-100 }, Warn <= Pass. #>
+    param($Readiness)
+    if ($Readiness -isnot [pscustomobject]) { return "'Readiness' must be an object such as { `"Pass`": 90, `"Warn`": 70 }." }
+    $unknown = @($Readiness.PSObject.Properties.Name | Where-Object { 'Pass', 'Warn' -notcontains $_ })
+    if ($unknown.Count) { "'Readiness' only takes Pass and Warn (found: $($unknown -join ', '))." }
+    $ok = $true
+    foreach ($key in 'Pass', 'Warn') {
+        $value = $Readiness.$key
+        $isNumber = $value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]
+        if (-not $isNumber -or $value -lt 0 -or $value -gt 100) { "'Readiness.$key' must be a number from 0 to 100."; $ok = $false }
+    }
+    if ($ok -and $Readiness.Warn -gt $Readiness.Pass) { "'Readiness.Warn' can't be higher than 'Readiness.Pass'." }
+}
+
+function Get-TkReadiness {
+    <#
+    .SYNOPSIS
+        Turns a module's readiness report (Write-TkReadiness) into what the GUI shows:
+        Ready, Total, NotEvaluated, Label, Percent (rounded down) and Rating (Pass, Warn or Fail).
+        Returns $null when the report is not a usable figure, so nothing is shown rather than a wrong score.
+    #>
+    param($Report, $Threshold)
+    if (-not $Report) { return }
+    if (-not $Threshold) { $Threshold = $script:ReadinessDefault }
+    $ready = $Report.Ready -as [int]
+    $total = $Report.Total -as [int]
+    $notEvaluated = if ($null -eq $Report.NotEvaluated) { 0 } else { $Report.NotEvaluated -as [int] }
+    $label = [string]$Report.Label
+    if ($null -eq $ready -or $null -eq $total -or $null -eq $notEvaluated -or [string]::IsNullOrWhiteSpace($label)) { return }
+    if ($total -le 0 -or $ready -lt 0 -or $ready -gt $total -or $notEvaluated -lt 0) { return }
+    if (Test-TkReadinessThreshold $Threshold) { return }
+
+    # Rate on the exact share, display it rounded down: 89.9 % is never shown or rated as 90 %.
+    $share = 100.0 * $ready / $total
+    $rating = if ($share -ge $Threshold.Pass) { 'Pass' } elseif ($share -ge $Threshold.Warn) { 'Warn' } else { 'Fail' }
+    [pscustomobject]@{
+        Ready        = $ready
+        Total        = $total
+        NotEvaluated = $notEvaluated
+        Label        = $label.Trim()
+        Percent      = [int][math]::Floor($share)
+        Rating       = $rating
+        Pass         = $Threshold.Pass
+        Warn         = $Threshold.Warn
     }
 }
 
@@ -78,6 +128,10 @@ function Test-TkManifest {
                 break
             }
         }
+    }
+
+    if ($Manifest.PSObject.Properties['Readiness'] -and $null -ne $Manifest.Readiness) {
+        foreach ($problem in Test-TkReadinessThreshold $Manifest.Readiness) { $problems.Add($problem) }
     }
 
     $declared = @(Get-TkManifestParameter $Manifest | ForEach-Object { ConvertTo-TkParameterDefinition $_ })
@@ -194,6 +248,9 @@ function Get-TkModule {
             }
             SupportsWhatIf = $supportsWhatIf
             ReadOnly       = [bool]($manifest -and $manifest.ReadOnly -eq $true)
+            Readiness      = if ($manifest -and $manifest.Readiness -and $problems.Count -eq 0) {
+                                 [pscustomobject]@{ Pass = $manifest.Readiness.Pass; Warn = $manifest.Readiness.Warn }
+                             } else { $script:ReadinessDefault }
             DryRun         = $dryRun
             Parameters     = @(if ($manifest) { Get-TkManifestParameter $manifest | ForEach-Object { ConvertTo-TkParameterDefinition $_ } })
             EntryPath      = $entryPath
@@ -708,13 +765,15 @@ function Get-TkPreferencePath {
 function Get-TkPreference {
     param([string] $Path = (Get-TkPreferencePath))
     # Theme: System follows the Windows app mode; Light or Dark override it.
-    $preference = [pscustomobject]@{ Favorites = [string[]]@(); GroupBy = 'Category'; Theme = 'System' }
+    # ReadinessView: Percent (73 % with counts) or Rating (Pass/Warn/Fail).
+    $preference = [pscustomobject]@{ Favorites = [string[]]@(); GroupBy = 'Category'; Theme = 'System'; ReadinessView = 'Percent' }
     if (Test-Path -LiteralPath $Path) {
         try {
             $saved = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($saved.Favorites) { $preference.Favorites = [string[]]@($saved.Favorites) }
             if ($saved.GroupBy) { $preference.GroupBy = [string]$saved.GroupBy }
             if ($saved.Theme -in 'System', 'Light', 'Dark') { $preference.Theme = [string]$saved.Theme }
+            if ($saved.ReadinessView -in 'Percent', 'Rating') { $preference.ReadinessView = [string]$saved.ReadinessView }
         }
         catch {
             # A corrupt preferences file is not worth failing over - start from defaults.
@@ -973,6 +1032,7 @@ function Start-TkJob {
         Output     = $output
         Collected  = New-Object System.Collections.Generic.List[object]
         Blocked    = New-Object System.Collections.Generic.List[object]   # changes stopped by the guard
+        Readiness  = $null                                                 # last Write-TkReadiness report
         Seen       = @{ Output = 0; Error = 0; Warning = 0; Verbose = 0; Information = 0 }
         Started    = Get-Date
     }
@@ -1004,6 +1064,11 @@ function Receive-TkJob {
             if ($source.Key -eq 'Information' -and $record.Tags -contains 'TkBlocked') {
                 $newBlocked.Add($record.MessageData)
                 $Job.Blocked.Add($record.MessageData)
+                continue
+            }
+            # Write-TkReadiness: kept on the job (last one wins), not logged. Get-TkReadiness validates it.
+            if ($source.Key -eq 'Information' -and $record.Tags -contains 'TkReadiness') {
+                $Job.Readiness = $record.MessageData
                 continue
             }
             $message = switch ($source.Key) {
@@ -1540,6 +1605,6 @@ Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm
     ConvertTo-TkFlatObject, ConvertTo-TkDataTable, Import-TkStyle, Import-TkXaml, Write-TkLogFile,
     Get-TkSystemTheme, Resolve-TkTheme, Get-TkTheme, Set-TkTheme,
     Split-TkList, ConvertTo-TkLabel, Get-TkSuggestedId, Get-TkScriptAnalysis, New-TkModule, Set-TkModuleTag,
-    Get-TkPreference, Save-TkPreference, ConvertTo-TkJson,
+    Get-TkPreference, Save-TkPreference, ConvertTo-TkJson, Get-TkReadiness,
     Get-TkDryRunProfile, ConvertTo-TkCodeLine, Get-TkFileSummary,
     Get-TkModuleInventory, Get-TkGalleryVersion, Test-TkElevated, Get-TkModuleUpdatePlan, Update-TkInstalledModule

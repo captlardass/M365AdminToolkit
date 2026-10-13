@@ -53,6 +53,10 @@
     <SolidColorBrush x:Key="Tk.Gold" Color="#F59E0B"/>
     <SolidColorBrush x:Key="Tk.Connected" Color="#22C55E"/>
     <SolidColorBrush x:Key="Tk.Disconnected" Color="#6B7280"/>
+    <SolidColorBrush x:Key="Tk.ReadinessPass" Color="#4ADE80"/>
+    <SolidColorBrush x:Key="Tk.ReadinessWarn" Color="#FBBF24"/>
+    <SolidColorBrush x:Key="Tk.ReadinessFail" Color="#F87171"/>
+    <SolidColorBrush x:Key="Tk.ReadinessTrack" Color="#2A2F38"/>
 
     <SolidColorBrush x:Key="Tk.ScrollThumb" Color="#474D59"/>
     <SolidColorBrush x:Key="Tk.ScrollThumbHover" Color="#5B6270"/>

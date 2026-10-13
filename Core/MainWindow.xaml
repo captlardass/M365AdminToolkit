@@ -96,48 +96,96 @@
 
                 <!-- Selected module header -->
                 <Border Grid.Row="0" Style="{StaticResource Card}" Margin="0,0,0,8">
-                    <StackPanel>
-                        <DockPanel>
-                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+                    <DockPanel>
+                        <!-- Module actions on the right; Run / Cancel under them, beside the title and description. -->
+                        <StackPanel DockPanel.Dock="Right" VerticalAlignment="Top" Margin="12,0,0,0">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                                 <ToggleButton x:Name="ViewScriptButton" Content="View script" Padding="8,2" Margin="6,0,0,0" Cursor="Hand"
                                               Visibility="Collapsed" ToolTip="Show the module's whole script (read-only). The viewer follows your selection."/>
                                 <Button x:Name="EditTagsButton" Content="Edit tags" Padding="8,2" Visibility="Collapsed"/>
                                 <Button x:Name="OpenFolderButton" Content="Open folder" Padding="8,2" Visibility="Collapsed"
                                         ToolTip="Open the module's folder to edit module.json or module.ps1"/>
                             </StackPanel>
-                            <Button x:Name="FavoriteButton" Style="{StaticResource StarButton}" FontSize="22" Content="&#x2606;"
-                                    Visibility="Collapsed" Margin="0,0,8,0"/>
-                            <TextBlock x:Name="ModuleTitle" Text="Select a module" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                        </DockPanel>
-                        <TextBlock x:Name="ModuleMeta" Foreground="{DynamicResource Tk.SubtleText}" FontSize="11" Margin="0,2,0,6"/>
-                        <WrapPanel x:Name="HeaderTagPanel"/>
-                        <DockPanel x:Name="TagEditPanel" Visibility="Collapsed" Margin="0,0,0,6">
-                            <Button x:Name="CancelTagsButton" DockPanel.Dock="Right" Content="Cancel" Padding="8,2"/>
-                            <Button x:Name="SaveTagsButton" DockPanel.Dock="Right" Content="Save tags" Padding="8,2" Style="{StaticResource Primary}"/>
-                            <TextBox x:Name="TagEditBox" Padding="4,2"/>
-                        </DockPanel>
-                        <TextBlock x:Name="ModuleDescription" TextWrapping="Wrap"
-                                   Text="Pick a task from the list on the left. Its inputs appear below. Click a star to make it a favourite."/>
-                    </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                                <Button x:Name="RunButton" Content="Run" MinWidth="90" IsEnabled="False" Style="{StaticResource Primary}"/>
+                                <Button x:Name="CancelButton" Content="Cancel" IsEnabled="False"/>
+                            </StackPanel>
+                        </StackPanel>
+                        <StackPanel>
+                            <DockPanel>
+                                <Button x:Name="FavoriteButton" Style="{StaticResource StarButton}" FontSize="22" Content="&#x2606;"
+                                        Visibility="Collapsed" Margin="0,0,8,0"/>
+                                <TextBlock x:Name="ModuleTitle" Text="Select a module" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            </DockPanel>
+                            <TextBlock x:Name="ModuleMeta" Foreground="{DynamicResource Tk.SubtleText}" FontSize="11" Margin="0,2,0,6"/>
+                            <WrapPanel x:Name="HeaderTagPanel"/>
+                            <DockPanel x:Name="TagEditPanel" Visibility="Collapsed" Margin="0,0,0,6">
+                                <Button x:Name="CancelTagsButton" DockPanel.Dock="Right" Content="Cancel" Padding="8,2"/>
+                                <Button x:Name="SaveTagsButton" DockPanel.Dock="Right" Content="Save tags" Padding="8,2" Style="{StaticResource Primary}"/>
+                                <TextBox x:Name="TagEditBox" Padding="4,2"/>
+                            </DockPanel>
+                            <TextBlock x:Name="ModuleDescription" TextWrapping="Wrap"
+                                       Text="Pick a task from the list on the left. Its inputs appear below. Click a star to make it a favourite."/>
+                        </StackPanel>
+                    </DockPanel>
                 </Border>
 
-                <!-- Generated parameter form -->
-                <Border Grid.Row="1" Style="{StaticResource Card}">
-                    <DockPanel>
-                        <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
-                            <Button x:Name="CancelButton" DockPanel.Dock="Right" Content="Cancel" IsEnabled="False" VerticalAlignment="Center"/>
-                            <Button x:Name="RunButton" DockPanel.Dock="Right" Content="Run" MinWidth="90" IsEnabled="False" Style="{StaticResource Primary}" VerticalAlignment="Center"/>
-                            <StackPanel VerticalAlignment="Center">
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <!-- Width set in code: * while the selected module has a readiness figure, otherwise 0. -->
+                        <ColumnDefinition x:Name="ReadinessColumn" Width="0"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Generated parameter form -->
+                    <Border Grid.Column="0" Style="{StaticResource Card}">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
                                 <CheckBox x:Name="WhatIfCheck" Visibility="Collapsed" FontWeight="SemiBold"
                                           Content="Dry run (WhatIf) - nothing is changed in Microsoft 365"/>
                                 <TextBlock x:Name="DryRunInfo" Style="{StaticResource Hint}" Margin="20,2,8,0" Visibility="Collapsed"/>
                             </StackPanel>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="ParamPanel" Margin="0,0,8,0"/>
+                            </ScrollViewer>
                         </DockPanel>
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <StackPanel x:Name="ParamPanel" Margin="0,0,8,0"/>
-                        </ScrollViewer>
-                    </DockPanel>
-                </Border>
+                    </Border>
+
+                    <!-- Tenant readiness from the selected module's last run (Write-TkReadiness) -->
+                    <Border x:Name="ReadinessCard" Grid.Column="1" Style="{StaticResource Card}" Margin="8,0,0,0" Visibility="Collapsed">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="Tenant readiness" Style="{StaticResource SectionTitle}" Margin="0,0,0,10"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid x:Name="ReadinessGauge" Grid.Column="0" Width="150" Height="150" VerticalAlignment="Top" Margin="4,0,20,0">
+                                    <Ellipse Stroke="{DynamicResource Tk.ReadinessTrack}" StrokeThickness="14"/>
+                                    <!-- Arc length comes from StrokeDashArray; rotated so it starts at 12 o'clock. -->
+                                    <Ellipse x:Name="ReadinessRing" StrokeThickness="14" StrokeDashCap="Flat" RenderTransformOrigin="0.5,0.5">
+                                        <Ellipse.RenderTransform>
+                                            <RotateTransform Angle="-90"/>
+                                        </Ellipse.RenderTransform>
+                                    </Ellipse>
+                                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                                        <TextBlock x:Name="ReadinessBig" FontSize="30" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                        <TextBlock x:Name="ReadinessSmall" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                    </StackPanel>
+                                </Grid>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Top">
+                                    <TextBlock x:Name="ReadinessLabel" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                    <TextBlock x:Name="ReadinessNotEvaluated" Foreground="{DynamicResource Tk.Warning}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                    <TextBlock x:Name="ReadinessThresholds" Foreground="{DynamicResource Tk.SubtleText}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                    <ToggleButton x:Name="ReadinessViewButton" Content="Pass / Warn / Fail" Padding="8,2" Margin="0,12,0,0"
+                                                  HorizontalAlignment="Left" AutomationProperties.Name="Show readiness as Pass, Warn or Fail"
+                                                  ToolTip="Show the rating large in the ring instead of the percentage"/>
+                                    <TextBlock x:Name="ReadinessSource" Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                        </DockPanel>
+                    </Border>
+                </Grid>
 
                 <GridSplitter Grid.Row="2" Height="8" HorizontalAlignment="Stretch" ResizeDirection="Rows" Background="Transparent"/>
 

@@ -23,6 +23,8 @@ input form, a results grid, CSV export and a safe dry run.
 - **Easy to find.** Search by name, category, tag or description. Group by category, tag or name, and star
   favourites.
 - **Results you can use.** Output lands in a sortable grid and exports to CSV in one click.
+- **Tenant readiness.** Modules that can measure a security-posture factor (e.g. how many users have a
+  passkey) show it after the run as a percentage with counts, or as Pass / Warn / Fail.
 - **Stays responsive.** Scripts run in a background worker, so the window never freezes and long runs can
   be cancelled.
 
@@ -195,6 +197,7 @@ crash the app.
 - **Support WhatIf if your script changes things.** Use `[CmdletBinding(SupportsShouldProcess)]` and wrap each
   change in `$PSCmdlet.ShouldProcess(...)`, then report `WhatIf` in the output row. The dry run then shows
   exactly what would change.
+- **Report tenant readiness when the script can prove it.** See [Tenant readiness](#tenant-readiness).
 - **Prefer `Invoke-MgGraphRequest`** over the `Microsoft.Graph.*` sub-modules, so only
   `Microsoft.Graph.Authentication` is needed.
 - **Keep scripts ASCII-only**, or save them as UTF-8 *with* BOM. Windows PowerShell 5.1 reads files without a
@@ -247,6 +250,7 @@ Modules\
 | `Requires.ExchangeOnline` | no | Connect to Exchange Online before running |
 | `Requires.GraphScopes` | no | Delegated Graph scopes. A non-empty list means the toolkit connects to Graph |
 | `Parameters[]` | no | The form inputs. See below |
+| `Readiness` | no | `{ "Pass": 90, "Warn": 70 }`: thresholds (0-100) for Pass / Warn / Fail. See [Tenant readiness](#tenant-readiness) |
 
 ### Parameters
 
@@ -267,6 +271,36 @@ Rules checked by `Test-ToolkitModules.ps1`:
 - A `[Parameter(Mandatory)]` script parameter is `"Required": true` in the manifest.
 - `WhatIf`, `Confirm`, `Verbose`, `Debug`, `ErrorAction` and `InformationAction` are reserved names.
 - Empty optional inputs are not passed, so the script's own default applies.
+- `Readiness`, if present, has only `Pass` and `Warn`, both numbers from 0 to 100, and `Warn` is not above `Pass`.
+
+### Tenant readiness
+
+A module that can prove a security-posture factor reports it once, at the end of its script:
+
+```powershell
+if (Test-Path Function:\Write-TkReadiness) {
+    Write-TkReadiness -Ready $withPasskey -Total $checked -NotEvaluated $couldNotCheck -Label 'users have a passkey'
+}
+```
+
+After the run, a **Tenant readiness** box appears beside the module's inputs. It holds a ring filled to the
+percentage and coloured by rating, the counts (e.g. "146 of 200 users have a passkey"), the "not evaluated"
+count and the thresholds. The **Pass / Warn / Fail** toggle puts the rating in large type in the ring instead of
+the percentage, and the choice is saved in your preferences. The box shows the selected module's last run in
+this session. It is hidden for modules that haven't reported a figure, and the inputs then use the full width.
+
+- **Count everything the module checked**, not only the rows it outputs. A report filtered to "problems only"
+  still reports against the whole population.
+- **Items that couldn't be checked go in `-NotEvaluated`**, never in `-Ready` or `-Total`.
+- **Ratings:** Pass at 90% or more, Warn at 70% or more, otherwise Fail. A module can set its own thresholds
+  with `"Readiness": { "Pass": 95, "Warn": 80 }` in `module.json`. The percentage is rounded down, so 89.9%
+  is a Warn, not a Pass.
+- **Fail closed.** Nothing is shown if the figure is impossible (ready above total, a total of 0), or if the run
+  failed or was cancelled, because a partial count would give the wrong score. Figures are kept in memory
+  only, never saved, and aren't added to the grid or the CSV.
+- The `Test-Path` check lets the script still run outside the toolkit.
+
+The self-test module shows a working example with dummy data.
 
 ## App-only sign-in (optional)
 

@@ -210,6 +210,29 @@ function Write-TkBlockedCall {
     Write-Information -MessageData $entry -Tags 'TkBlocked' -InformationAction Continue
 }
 
+function Write-TkReadiness {
+    <#
+        Reports a tenant-readiness figure for this run: how many of the items the module evaluated
+        meet its security-posture rule (e.g. 146 of 200 users have a passkey). The GUI shows it next
+        to the result count; it is not a grid row and not in the CSV.
+        Count the whole population the module checked, not just the rows it outputs. Items that
+        could not be evaluated go in -NotEvaluated, never in -Ready or -Total.
+        An impossible figure is not reported (fail closed) - a warning says why.
+    #>
+    param(
+        [Parameter(Mandatory)] [int] $Ready,
+        [Parameter(Mandatory)] [int] $Total,
+        [Parameter(Mandatory)] [string] $Label,
+        [int] $NotEvaluated = 0
+    )
+    if ($Total -le 0 -or $Ready -lt 0 -or $Ready -gt $Total -or $NotEvaluated -lt 0) {
+        Write-Warning "Readiness not reported: '$Ready of $Total' (not evaluated: $NotEvaluated) is not a valid figure."
+        return
+    }
+    $report = [pscustomobject]@{ Ready = $Ready; Total = $Total; Label = $Label; NotEvaluated = $NotEvaluated }
+    Write-Information -MessageData $report -Tags 'TkReadiness' -InformationAction Continue
+}
+
 function Resolve-TkParameter {
     param($Parameters, [string] $Name)
     if ($Parameters.ContainsKey($Name)) { return $Parameters[$Name] }
