@@ -131,7 +131,8 @@ function Disconnect-TkAll {
       * Commands from Microsoft 365 modules (or with M365 noun prefixes) whose verb changes
         state -> a stub that records the call and does nothing.
       * Invoke-MgGraphRequest / Invoke-RestMethod / Invoke-WebRequest -> a proxy that lets reads
-        through (GET, and known read-only POST actions) and records everything else.
+        through (GET, known read-only Graph POST actions, and Exchange Online v3 InvokeCommand
+        POSTs for Get-* cmdlets) and records everything else.
 
     This works for scripts that know nothing about WhatIf. Blocked calls are sent to the GUI
     as Information records tagged 'TkBlocked'. Known gaps (reported per module by
@@ -233,7 +234,9 @@ function ConvertTo-TkCallArgument {
         if ($meta) {
             $hasColon = ([string]$item).EndsWith(':')
             if (-not $hasColon -and $meta.SwitchParameter) { $named[$meta.Name] = $true; $i++ }
-            else { $named[$meta.Name] = if ($i + 1 -lt $Arguments.Count) { $Arguments[$i + 1] } else { $null }; $i += 2 }
+            # Plain assignment, not '= if (...)': an if-expression unrolls arrays (byte[] body -> object[]).
+            elseif ($i + 1 -lt $Arguments.Count) { $named[$meta.Name] = $Arguments[$i + 1]; $i += 2 }
+            else { $named[$meta.Name] = $null; $i += 2 }
             continue
         }
         $positional.Add($item)
@@ -242,9 +245,41 @@ function ConvertTo-TkCallArgument {
     [pscustomobject]@{ Named = $named; Positional = $positional.ToArray() }
 }
 
+function ConvertFrom-TkRequestBody {
+    <# A request body as an object: UTF-8 bytes are decoded and JSON strings parsed. $null if it can't be read. #>
+    param($Body)
+    if ($Body -is [byte[]]) { try { $Body = [System.Text.Encoding]::UTF8.GetString($Body) } catch { return $null } }
+    if ($Body -is [string]) { try { return $Body | ConvertFrom-Json } catch { return $null } }
+    $Body
+}
+
+function Get-TkMember {
+    <# A key of a hashtable or a property of an object (both case-insensitive); $null if absent. #>
+    param($Object, [string] $Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary]) { return $Object[$Name] }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) { $property.Value }
+}
+
+function Test-TkExoReadCommand {
+    <#
+        True if a POST is an Exchange Online v3 cmdlet call (.../adminapi/<version>/<tenant>/InvokeCommand)
+        for a Get-* cmdlet. EXO v3 sends every classic cmdlet, reads included, this way. The cmdlet name
+        must be in both the body and the X-CmdletName header, and they must agree; anything else is a write.
+    #>
+    param([string] $Uri, $Body, $Headers)
+    $path = ([string]$Uri -replace '[?#].*$', '').TrimEnd('/')
+    if ($path -notmatch '/adminapi/[^/]+/[^/]+/InvokeCommand$') { return $false }
+    $bodyCmdlet = [string](Get-TkMember (Get-TkMember (ConvertFrom-TkRequestBody $Body) 'CmdletInput') 'CmdletName')
+    $headerCmdlet = [string](Get-TkMember $Headers 'X-CmdletName')
+    if (-not $bodyCmdlet -or $bodyCmdlet -ne $headerCmdlet) { return $false }
+    $bodyCmdlet -match '^Get-[A-Za-z]+$'
+}
+
 function Test-TkReadRequest {
-    <# True if an HTTP request only reads: GET/HEAD/OPTIONS, or a known read-only Graph POST action. #>
-    param([string] $Method, [string] $Uri, $Body)
+    <# True if an HTTP request only reads: GET/HEAD/OPTIONS, a known read-only Graph POST action, or an EXO Get-* cmdlet. #>
+    param([string] $Method, [string] $Uri, $Body, $Headers)
     $m = if ($Method) { $Method.ToUpperInvariant() } else { 'GET' }
     if ($m -eq 'DEFAULT') { $m = if ($null -ne $Body) { 'POST' } else { 'GET' } }
     if ('GET', 'HEAD', 'OPTIONS' -contains $m) { return $true }
@@ -253,16 +288,18 @@ function Test-TkReadRequest {
     $path = ([string]$Uri -replace '[?#].*$', '').TrimEnd('/')
     if ($path -match '/(getByIds|getMemberGroups|getMemberObjects|checkMemberGroups|checkMemberObjects|runHuntingQuery|validateProperties|getAvailableExtensionProperties)$' -or
         $path -match '/search/query$') { return $true }
+    if (Test-TkExoReadCommand -Uri $Uri -Body $Body -Headers $Headers) { return $true }
 
     if ($path -match '/\$batch$') {
-        # A batch is a read only if every request inside it is.
-        $parsed = $Body
-        if ($parsed -is [string]) { try { $parsed = $parsed | ConvertFrom-Json } catch { return $false } }
-        $requests = @(if ($parsed -is [System.Collections.IDictionary]) { $parsed['requests'] } elseif ($parsed) { $parsed.requests })
+        # A batch is a read only if every request inside it is (Graph GETs, or EXO Get-* cmdlet calls).
+        $parsed = ConvertFrom-TkRequestBody $Body
+        $requests = @(Get-TkMember $parsed 'requests')
         if (-not $requests) { return $false }
         foreach ($r in $requests) {
-            $rm = if ($r -is [System.Collections.IDictionary]) { $r['method'] } else { $r.method }
-            if ('GET', 'HEAD' -notcontains ([string]$rm).ToUpperInvariant()) { return $false }
+            $rm = ([string](Get-TkMember $r 'method')).ToUpperInvariant()
+            if ('GET', 'HEAD' -contains $rm) { continue }
+            if ($rm -eq 'POST' -and (Test-TkExoReadCommand -Uri (Get-TkMember $r 'url') -Body (Get-TkMember $r 'body') -Headers (Get-TkMember $r 'headers'))) { continue }
+            return $false
         }
         return $true
     }
@@ -285,9 +322,11 @@ function New-TkRestProxy {
                   else { @($call.Positional | Where-Object { $_ -is [string] -and $_ -match $global:TkHttpMethods }) | Select-Object -First 1 }
         $uri = if ($call.Named.ContainsKey('Uri')) { [string]$call.Named['Uri'] }
                else { @($call.Positional | Where-Object { $_ -isnot [string] -or $_ -notmatch $global:TkHttpMethods }) | Select-Object -First 1 }
-        $body = if ($call.Named.ContainsKey('Body')) { $call.Named['Body'] } else { $null }
+        # Indexing, not '= if (...)': an if-expression would unroll a byte[] body into object[].
+        $body = $call.Named['Body']
+        $headers = $call.Named['Headers']
 
-        if (Test-TkReadRequest -Method $method -Uri $uri -Body $body) {
+        if (Test-TkReadRequest -Method $method -Uri $uri -Body $body -Headers $headers) {
             $positional = @($call.Positional)
             $named = $call.Named
             & $Real @positional @named

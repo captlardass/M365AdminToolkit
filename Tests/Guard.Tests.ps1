@@ -165,6 +165,40 @@ Set-MgRequestContext -MaxRetry 3 | Out-Null
 Check 'Graph request aliases: GET passes, DELETE blocked' ($r.Output -contains 'alias GET passed through' -and $r.Blocked.Count -eq 1 -and $r.Blocked[0].Target -eq 'DELETE v1.0/users/1') (($r.Blocked | ForEach-Object Target) -join ' | ')
 Check 'Local-only Graph settings (Set-MgRequestContext) allowed' ($r.Output -contains 'local setting ok' -and $r.Errors.Count -eq 0) ($r.Errors -join ' / ')
 
+# 14. Exchange Online v3 sends classic cmdlets (Get-MailboxFolderStatistics...) as POST .../InvokeCommand,
+#     shaped like the generated tmpEXO module does. Only Get-* with matching header and body is a read.
+$r = Invoke-Probe 'exo-rest' -Guard ReadOnly -Script @'
+$base = 'http://127.0.0.1:9/adminapi/beta/00000000-0000-0000-0000-000000000000'
+# Leading comma: return the byte[] itself, as EXO passes it, not unrolled into object[].
+function Get-ExoBody([string] $Cmdlet) { , [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json @{ CmdletInput = @{ CmdletName = $Cmdlet; Parameters = @{ Identity = 'shared1@contoso.example' } } } -Depth 5 -Compress)) }
+function Get-ExoBatch([string[]] $Cmdlets) {
+    $requests = foreach ($c in $Cmdlets) { @{ id = $c; method = 'POST'; url = "$base/InvokeCommand"; headers = @{ 'X-CmdletName' = $c }; body = @{ CmdletInput = @{ CmdletName = $c; Parameters = @{} } } } }
+    , [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json @{ requests = @($requests) } -Depth 10))
+}
+try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Method 'POST' -Headers @{ 'X-CmdletName' = 'Get-MailboxFolderStatistics' } -Body (Get-ExoBody 'Get-MailboxFolderStatistics') -Uri "$base/InvokeCommand" } catch { 'exo get passed through' }
+try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Method 'POST' -Headers @{ 'X-CmdletName' = 'Get-DistributionGroupMember' } -Body '{"CmdletInput":{"CmdletName":"Get-DistributionGroupMember","Parameters":{}}}' -Uri "$base/InvokeCommand?`$skiptoken=abc" } catch { 'exo string-body paged get passed through' }
+try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Method 'POST' -Headers @{ 'X-CmdletName' = 'Get-Mailbox' } -Body (Get-ExoBatch 'Get-Mailbox', 'Get-MailboxFolderPermission') -Uri "$base/`$batch" } catch { 'exo get batch passed through' }
+Invoke-WebRequest -UseBasicParsing -Method 'POST' -Headers @{ 'X-CmdletName' = 'Set-Mailbox' } -Body (Get-ExoBody 'Set-Mailbox') -Uri "$base/InvokeCommand"
+Invoke-WebRequest -UseBasicParsing -Method 'POST' -Headers @{ 'X-CmdletName' = 'Get-Mailbox' } -Body (Get-ExoBody 'Set-Mailbox') -Uri "$base/InvokeCommand"
+Invoke-WebRequest -UseBasicParsing -Method 'POST' -Headers @{ 'X-CmdletName' = 'Set-Mailbox' } -Body (Get-ExoBody 'Get-Mailbox') -Uri "$base/InvokeCommand"
+Invoke-WebRequest -UseBasicParsing -Method 'POST' -Body (Get-ExoBody 'Get-Mailbox') -Uri "$base/InvokeCommand"
+Invoke-WebRequest -UseBasicParsing -Method 'POST' -Headers @{ 'X-CmdletName' = 'Get-Mailbox' } -Body 'not json' -Uri "$base/InvokeCommand"
+Invoke-WebRequest -UseBasicParsing -Method 'POST' -Headers @{ 'X-CmdletName' = 'Get-Mailbox' } -Body (Get-ExoBody 'Get-Mailbox') -Uri 'http://127.0.0.1:9/api/somethingElse'
+Invoke-WebRequest -UseBasicParsing -Method 'POST' -Headers @{ 'X-CmdletName' = 'Get-Mailbox' } -Body (Get-ExoBatch 'Get-Mailbox', 'Remove-MailboxPermission') -Uri "$base/`$batch"
+Invoke-WebRequest -UseBasicParsing -Method 'POST' -Headers @{ 'X-CmdletName' = 'Get-Mailbox; Set-Mailbox' } -Body (Get-ExoBody 'Get-Mailbox; Set-Mailbox') -Uri "$base/InvokeCommand"
+'@
+$expectPass = 'exo get passed through', 'exo string-body paged get passed through', 'exo get batch passed through'
+$missing = @($expectPass | Where-Object { $r.Output -notcontains $_ })
+Check 'EXO Get-* InvokeCommand passes (bytes, string + paging, batch)' ($missing.Count -eq 0) "missing: $($missing -join ', ')"
+Check 'EXO non-Get or spoofed InvokeCommand blocked (Set, header/body mismatch x2, no header, bad JSON, other path, mixed batch, injection)' ($r.Blocked.Count -eq 8) (($r.Blocked | ForEach-Object Target) -join ' | ')
+
+# 15. The REST proxy re-splats arguments; an array value (EXO's byte[] body) must not be unrolled.
+$r = Invoke-Probe 'arg-types' -Guard Off -Script @'
+$call = ConvertTo-TkCallArgument -Command (Get-Command Invoke-WebRequest) -Arguments @('-Method', 'POST', '-Body', ([byte[]](1, 2, 3)), '-Uri', 'http://127.0.0.1:9/')
+'{0} {1}' -f $call.Named['Body'].GetType().Name, $call.Named['Body'].Count
+'@
+Check 'Proxied arguments keep their type (byte[] body reaches the real cmdlet intact)' ($r.Output -contains 'Byte[] 3') ($r.Output -join ';')
+
 $worker.Dispose()
 $results | Format-Table -AutoSize -Wrap | Out-String -Width 220
 "{0} passed, {1} failed" -f @($results | Where-Object Result -eq 'PASS').Count, @($results | Where-Object Result -eq 'FAIL').Count
