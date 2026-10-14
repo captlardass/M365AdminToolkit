@@ -45,17 +45,6 @@
                 </ItemsPanelTemplate>
             </StatusBar.ItemsPanel>
             <StatusBarItem DockPanel.Dock="Right" Margin="0,0,6,0">
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="Theme" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource Tk.SubtleText}"/>
-                    <ComboBox x:Name="ThemeBox" MinWidth="130" Padding="6,1,24,1" AutomationProperties.Name="Theme"
-                              ToolTip="Match Windows follows the light/dark app mode in Windows Settings">
-                        <ComboBoxItem Content="Match Windows" Tag="System"/>
-                        <ComboBoxItem Content="Light" Tag="Light"/>
-                        <ComboBoxItem Content="Dark" Tag="Dark"/>
-                    </ComboBox>
-                </StackPanel>
-            </StatusBarItem>
-            <StatusBarItem DockPanel.Dock="Right">
                 <ProgressBar x:Name="BusyBar" Width="140" Height="10" Visibility="Collapsed"/>
             </StatusBarItem>
             <StatusBarItem>
@@ -218,6 +207,8 @@
                                 <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6" LastChildFill="False">
                                     <TextBlock x:Name="ResultCount" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource Tk.SubtleText}" Text="No results yet"/>
                                     <Button x:Name="ExportButton" DockPanel.Dock="Right" Content="Export CSV..." IsEnabled="False"/>
+                                    <Button x:Name="OpenExcelButton" DockPanel.Dock="Right" Content="Open in Excel" IsEnabled="False"
+                                            ToolTip="Open the results as a table in a new, unsaved Excel workbook. Nothing is written to disk until you save it."/>
                                 </DockPanel>
                                 <DataGrid x:Name="ResultGrid" AutoGenerateColumns="True" IsReadOnly="True"
                                           CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
@@ -258,7 +249,53 @@
             <TabItem.Header>
                 <TextBlock x:Name="SettingsTabHeader" Text="Settings" FontSize="14" FontWeight="SemiBold"/>
             </TabItem.Header>
-            <Border x:Name="InventorySection" Style="{StaticResource Card}" Margin="0,8,0,0">
+            <DockPanel x:Name="SettingsPage" Margin="0,8,0,0">
+            <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="2*"/>
+                </Grid.ColumnDefinitions>
+                <!-- Personal: saved in %APPDATA% preferences -->
+                <Border x:Name="AppearanceSection" Grid.Column="0" Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Appearance" Style="{StaticResource SectionTitle}" Margin="0,0,0,10"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Theme" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <ComboBox x:Name="ThemeBox" MinWidth="150" Padding="6,1,24,1" AutomationProperties.Name="Theme"
+                                      ToolTip="Match Windows follows the light/dark app mode in Windows Settings">
+                                <ComboBoxItem Content="Match Windows" Tag="System"/>
+                                <ComboBoxItem Content="Light" Tag="Light"/>
+                                <ComboBoxItem Content="Dark" Tag="Dark"/>
+                            </ComboBox>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0" TextWrapping="Wrap"
+                                   Text="Saved for you only, on this PC."/>
+                    </StackPanel>
+                </Border>
+                <!-- Toolkit policy: saved in Config\settings.json, read by the worker's session check -->
+                <Border x:Name="SessionSection" Grid.Column="2" Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Sign-in sessions" Style="{StaticResource SectionTitle}" Margin="0,0,0,10"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="Sign out" Width="70" VerticalAlignment="Center"/>
+                            <TextBox x:Name="MaxAgeHoursBox" Width="56" Padding="4,2" TextAlignment="Right"
+                                     AutomationProperties.Name="Sign out after this many hours since sign-in (1 to 24)"/>
+                            <TextBlock Text="hours after sign-in (1-24)" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Sign out" Width="70" VerticalAlignment="Center"/>
+                            <TextBox x:Name="IdleMinutesBox" Width="56" Padding="4,2" TextAlignment="Right"
+                                     AutomationProperties.Name="Sign out after this many minutes without use (1 to 1440)"/>
+                            <TextBlock Text="minutes without use (1-1440)" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                            <Button x:Name="SaveSessionButton" Content="Save" Style="{StaticResource Primary}" Margin="16,0,0,0" Padding="14,2"/>
+                        </StackPanel>
+                        <TextBlock x:Name="SessionSettingsInfo" Style="{StaticResource Hint}" Margin="0,8,0,0" TextWrapping="Wrap"
+                                   Text="Sessions also always end at midnight, when the PC sleeps and when the toolkit closes. Saved in Config\settings.json for everyone using this copy of the toolkit, and applied at once."/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+            <Border x:Name="InventorySection" Style="{StaticResource Card}">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="Installed PowerShell modules" Style="{StaticResource SectionTitle}" Margin="0,0,0,2"/>
                     <TextBlock DockPanel.Dock="Top" Style="{StaticResource Hint}" Margin="0,0,0,10" TextWrapping="Wrap"
@@ -271,6 +308,10 @@
                                 ToolTip="Compare installed versions with the latest on the PowerShell Gallery (needs internet)"/>
                         <Button x:Name="RescanModulesButton" DockPanel.Dock="Right" Content="Rescan"
                                 ToolTip="List the PowerShell modules installed on this PC again"/>
+                        <Button x:Name="UninstallModulesButton" DockPanel.Dock="Right" Content="Uninstall" IsEnabled="False"
+                                ToolTipService.ShowOnDisabled="True" ToolTip="Select the installed modules to remove first"/>
+                        <Button x:Name="ModuleFoldersButton" DockPanel.Dock="Right" Content="Module folders"
+                                ToolTip="Show where PowerShell modules are installed on this PC, and open the folder"/>
                         <CheckBox x:Name="ShowGraphSubCheck" DockPanel.Dock="Right" Content="Show Graph sub-modules"
                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
                         <TextBlock x:Name="InventorySummary" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource Tk.SubtleText}"
@@ -304,6 +345,7 @@
                     </DataGrid>
                 </DockPanel>
             </Border>
+            </DockPanel>
         </TabItem>
         </TabControl>
     </DockPanel>

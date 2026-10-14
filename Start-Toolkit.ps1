@@ -92,7 +92,8 @@ function Update-Buttons {
     $busy = [bool]$State.Job
     $ui.RunButton.IsEnabled = (-not $busy) -and [bool]$State.Current -and [bool]$State.Current.IsValid
     $ui.CancelButton.IsEnabled = $busy -and [bool]$State.Job.Cancellable
-    foreach ($name in 'ConnectGraphButton', 'ConnectExoButton', 'DisconnectButton', 'ReloadButton', 'AddModuleButton', 'SaveTagsButton') {
+    # SaveSessionButton: new limits are applied in the worker, which can't take a second job.
+    foreach ($name in 'ConnectGraphButton', 'ConnectExoButton', 'DisconnectButton', 'ReloadButton', 'AddModuleButton', 'SaveTagsButton', 'SaveSessionButton') {
         $ui[$name].IsEnabled = -not $busy
     }
     # A module update runs apart from the worker but takes minutes, so it shows the busy bar too.
@@ -532,6 +533,7 @@ function Show-Results {
     $ui.ResultGrid.ItemsSource = (ConvertTo-TkDataTable -FlatObject $State.Results).DefaultView
     $ui.ResultCount.Text = '{0} result(s) from {1}' -f $State.Results.Count, $From
     $ui.ExportButton.IsEnabled = $State.Results.Count -gt 0
+    $ui.OpenExcelButton.IsEnabled = $State.Results.Count -gt 0
 }
 
 function Show-Readiness {
@@ -617,6 +619,133 @@ function Update-InventoryButtons {
         elseif (-not $plan.Count -and $selected.Count) { 'The selected modules need no update. Clear the selection to update everything.' }
         elseif (-not $plan.Count) { 'Everything is up to date' }
         else { "Install from the PowerShell Gallery: $(@($plan | ForEach-Object { "$($_.Module) $($_.To)" }) -join ', ')" }
+
+    $remove = $ui.UninstallModulesButton
+    $removable = @(Get-UninstallCandidate)
+    $remove.Content = if ($removable.Count) { "Uninstall ($($removable.Count))" } else { 'Uninstall' }
+    $remove.IsEnabled = $idle -and $removable.Count -gt 0
+    $remove.ToolTip = if (-not $idle) { 'Busy - wait for the current scan or update to finish' }
+        elseif (-not $removable.Count) { 'Select the installed modules to remove first' }
+        else { "Remove every installed version of: $(@($removable | ForEach-Object Module) -join ', ')" }
+}
+
+function Get-UninstallCandidate {
+    <# The selected rows that are actually installed. #>
+    $selected = @(Get-SelectedInventoryModule)
+    if (-not $selected.Count) { return }
+    $State.Inventory | Where-Object { $_.Installed -and $selected -contains $_.Module }
+}
+
+function Show-ModuleFolders {
+    <#
+        Lists the folders PowerShell loads modules from (and where the selected modules are), then offers
+        to open one in Explorer. On screen only: the paths contain the user name, so they are never logged.
+    #>
+    $folders = @(Get-TkModuleFolder)
+    $selected = @(Get-SelectedInventoryModule)
+    $copies = if ($selected.Count) { @(Get-TkModuleLocation -Name $selected) } else { @() }
+
+    $lines = @('PowerShell looks for modules in these folders, in this order:', '')
+    $lines += @($folders | ForEach-Object { "  $($_.Scope): $($_.Path)$(if (-not $_.Exists) { '  (does not exist yet)' })" })
+    if ($copies.Count) {
+        $lines += '', 'Selected modules:'
+        $lines += @($copies | ForEach-Object { "  $($_.Module) $($_.Version): $($_.Path)" })
+    }
+    elseif ($selected.Count) { $lines += '', 'The selected modules are not installed.' }
+
+    # Open the selected module's own folder (the one holding its version folders), else the user's module folder.
+    $open = $null
+    if ($copies.Count) {
+        $newest = @($copies | Where-Object Module -eq $copies[0].Module)[-1].Path
+        $open = if ($null -ne (ConvertTo-ModuleFolderVersion (Split-Path $newest -Leaf))) { Split-Path $newest -Parent } else { $newest }
+    }
+    else { $open = @($folders | Where-Object { $_.Exists -and $_.Scope -eq 'CurrentUser' }) + @($folders | Where-Object Exists) | Select-Object -First 1 -ExpandProperty Path }
+
+    $lines += '', 'Ctrl+C copies this text.'
+    if (-not $open -or -not (Test-Path -LiteralPath $open)) {
+        [void][System.Windows.MessageBox]::Show(($lines -join "`n"), 'Module folders', 'OK', 'Information')
+        return
+    }
+    $lines += '', "Open this folder in Explorer?`n  $open"
+    if ([System.Windows.MessageBox]::Show(($lines -join "`n"), 'Module folders', 'YesNo', 'Information') -eq 'Yes') {
+        Start-Process -FilePath explorer.exe -ArgumentList "`"$open`""
+    }
+}
+
+function ConvertTo-ModuleFolderVersion {
+    param([string] $Text)
+    $v = $null
+    if ([version]::TryParse($Text, [ref]$v)) { $v } else { $null }
+}
+
+function Start-ModuleUninstall {
+    <# Asks first, then removes every installed version of the selected modules in a throwaway runspace. #>
+    if ($State.InventoryJob) { return }
+    $rows = @(Get-UninstallCandidate)
+    if (-not $rows.Count) { return }
+    $lines = @($rows | Select-Object -First 12 | ForEach-Object {
+        $versions = @($_.Installed) + @(([string]$_.OtherVersions -split ',\s*') | Where-Object { $_ })
+        "  $($_.Module) $($versions -join ', ') ($($_.Scope))"
+    })
+    if ($rows.Count -gt 12) { $lines += "  ...and $($rows.Count - 12) more" }
+
+    $notes = @()
+    $required = @($rows | Where-Object Role -eq 'Required' | ForEach-Object Module)
+    if ($required.Count) { $notes += "$($required -join ' and ') $(if ($required.Count -gt 1) { 'are' } else { 'is' }) required by the toolkit: modules that need it stop working until you install it again." }
+    $names = @($rows | ForEach-Object Module)
+    foreach ($bundle in 'Microsoft.Graph', 'Microsoft.Graph.Beta') {
+        if ($names -notcontains $bundle) { continue }
+        $subs = @($State.Inventory | Where-Object { $_.Installed -and $_.Module -like "$bundle.*" -and $names -notcontains $_.Module -and
+            -not ($bundle -eq 'Microsoft.Graph' -and $_.Module -like 'Microsoft.Graph.Beta*') -and $_.Module -ne 'Microsoft.Graph.Authentication' })
+        if ($subs.Count) { $notes += "Removing the $bundle bundle leaves its $($subs.Count) sub-module(s) installed. Tick 'Show Graph sub-modules' to select them too." }
+    }
+    if (-not $State.Elevated -and @($rows | Where-Object Scope -eq 'AllUsers').Count) { $notes += 'Modules installed for all users can only be removed when the toolkit runs as administrator.' }
+    $notes += "Modules the toolkit has loaded (for example after Connect Graph) are skipped. To remove those, restart the toolkit and uninstall before connecting."
+
+    $text = "Uninstall every installed version of these PowerShell modules?`n`n$($lines -join "`n")`n`n$($notes -join "`n`n")"
+    if ([System.Windows.MessageBox]::Show($text, 'Uninstall modules', 'YesNo', 'Warning', 'No') -ne 'Yes') { return }
+
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.Open()
+    $job = Start-TkJob -Runspace $runspace -Name 'Uninstall modules' -Parameters @{
+        CorePath = Join-Path $PSScriptRoot 'Core\Toolkit.Core.psm1'
+        Name     = [string[]]$names
+    } -ScriptBlock {
+        param($CorePath, $Name)
+        Import-Module $CorePath
+        Uninstall-TkInstalledModule -Name $Name
+    }
+    $job | Add-Member -NotePropertyMembers @{ Runspace = $runspace; Kind = 'Uninstall' }
+    $State.InventoryJob = $job
+    Write-UiLog 'INFO' "Uninstalling $($names.Count) PowerShell module(s): $($names -join ', ')"
+    $ui.InventorySummary.Text = "Uninstalling $($names.Count) module(s) - progress is on the Log tab..."
+    Update-Buttons
+    Update-InventoryButtons
+    $inventoryTimer.Start()
+}
+
+function Complete-ModuleUninstall {
+    $job = $State.InventoryJob
+    $received = Receive-TkJob -Job $job
+    $done = Complete-TkJob -Job $job
+    $job.Runspace.Dispose()
+    $State.InventoryJob = $null
+    Update-Buttons
+    foreach ($entry in $received.Log) { Write-UiLog $entry.Level $entry.Message }
+
+    $rows = $job.Collected.ToArray()
+    $removed = @($rows | Where-Object Status -eq 'Removed')
+    $notDone = @($rows | Where-Object Status -in 'Failed', 'Skipped')
+    $summary = if ($done.Failure) { "Module uninstall failed: $($done.Failure)" }
+        else { "Module uninstall: $($removed.Count) version(s) removed, $($notDone.Count) not removed." }
+    Write-UiLog $(if ($done.Failure -or $notDone.Count) { 'WARN' } else { 'INFO' }) $summary
+    $ui.StatusText.Text = $summary
+    $message = $summary
+    if ($notDone.Count) { $message += "`n`nNot removed:`n$(@($notDone | ForEach-Object { "  $($_.Module) $($_.Version): $($_.Message)" }) -join "`n")" }
+    if ($removed.Count) { $message += "`n`nThis session keeps any version it already loaded until the toolkit restarts." }
+    $icon = if ($done.Failure -or $notDone.Count) { 'Warning' } else { 'Information' }
+    [void][System.Windows.MessageBox]::Show($message, 'Uninstall modules', 'OK', $icon)
+    Start-InventoryScan -CheckGallery:$State.InventoryChecked
 }
 
 function Get-SelectedInventoryModule {
@@ -785,13 +914,17 @@ $inventoryTimer.Add_Tick({
     $job = $State.InventoryJob
     if (-not $job) { $inventoryTimer.Stop(); return }
     if (-not $job.Handle.IsCompleted) {
-        # An update takes minutes: show its progress as it happens.
-        if ($job.Kind -eq 'Update') { foreach ($entry in (Receive-TkJob -Job $job).Log) { Write-UiLog $entry.Level $entry.Message } }
+        # An update or uninstall takes minutes: show its progress as it happens.
+        if ($job.Kind -ne 'Scan') { foreach ($entry in (Receive-TkJob -Job $job).Log) { Write-UiLog $entry.Level $entry.Message } }
         return
     }
     $inventoryTimer.Stop()
     try {
-        if ($job.Kind -eq 'Update') { Complete-ModuleUpdate } else { Complete-InventoryScan }
+        switch ($job.Kind) {
+            'Update' { Complete-ModuleUpdate }
+            'Uninstall' { Complete-ModuleUninstall }
+            default { Complete-InventoryScan }
+        }
     }
     catch {
         $State.InventoryJob = $null
@@ -810,6 +943,8 @@ $sessionTimer.Add_Tick({ if (-not $State.Job -and $State.Worker) { Update-Connec
 $ui.RescanModulesButton.Add_Click({ Start-InventoryScan -CheckGallery:$State.InventoryChecked })
 $ui.CheckUpdatesButton.Add_Click({ Start-InventoryScan -CheckGallery })
 $ui.UpdateModulesButton.Add_Click({ Start-ModuleUpdate })
+$ui.UninstallModulesButton.Add_Click({ Start-ModuleUninstall })
+$ui.ModuleFoldersButton.Add_Click({ Show-ModuleFolders })
 $ui.InventoryGrid.Add_SelectionChanged({ Update-InventoryButtons })
 $ui.ShowGraphSubCheck.Add_Checked({ Update-InventoryView })
 $ui.ShowGraphSubCheck.Add_Unchecked({ Update-InventoryView })
@@ -931,6 +1066,7 @@ $ui.RunButton.Add_Click({
 
     $ui.ResultGrid.ItemsSource = $null
     $ui.ExportButton.IsEnabled = $false
+    $ui.OpenExcelButton.IsEnabled = $false
     $ui.ResultCount.Text = 'Running...'
     # Never show an old figure next to a run in progress.
     $State.ReadinessByModule.Remove($module.Id)
@@ -1004,6 +1140,52 @@ $ui.ExportButton.Add_Click({
         Write-UiLog 'INFO' "Exported $($State.Results.Count) row(s) to $($dialog.FileName)"
     }
 })
+
+$ui.OpenExcelButton.Add_Click({
+    if (-not $State.Results.Count) { return }
+    $ui.StatusText.Text = 'Opening the results in Excel...'
+    $ui.Window.Cursor = [System.Windows.Input.Cursors]::Wait
+    try {
+        Open-TkExcelTable -Rows $State.Results -SheetName $State.ResultsFrom
+        Write-UiLog 'INFO' "Opened $($State.Results.Count) row(s) in Excel (unsaved workbook)."
+        $ui.StatusText.Text = 'Opened in Excel. The workbook is not saved until you save it.'
+    }
+    catch {
+        $ui.StatusText.Text = 'Could not open Excel.'
+        [void][System.Windows.MessageBox]::Show($_.Exception.Message, 'Open in Excel', 'OK', 'Warning')
+    }
+    finally { $ui.Window.ClearValue([System.Windows.FrameworkElement]::CursorProperty) }
+})
+
+# Settings > Sign-in sessions starts with the limits in effect (settings.json, or the defaults).
+$startLimit = Get-TkSessionLimit -Settings $settings
+$ui.MaxAgeHoursBox.Text = [string]$startLimit.MaxAgeHours
+$ui.IdleMinutesBox.Text = [string]$startLimit.IdleMinutes
+
+function Save-SessionLimit {
+    $check = Test-TkSessionLimit -MaxAgeHours $ui.MaxAgeHoursBox.Text -IdleMinutes $ui.IdleMinutesBox.Text
+    if ($check.Problems.Count) {
+        [void][System.Windows.MessageBox]::Show(($check.Problems -join "`n"), 'Sign-in sessions', 'OK', 'Warning')
+        return
+    }
+    try { Save-TkSessionLimit -Path $settingsPath -MaxAgeHours $check.MaxAgeHours -IdleMinutes $check.IdleMinutes }
+    catch {
+        [void][System.Windows.MessageBox]::Show("Could not save: $($_.Exception.Message)", 'Sign-in sessions', 'OK', 'Error')
+        return
+    }
+    Write-TkLogFile -Path $State.LogFile -Level 'INFO' -Message "Session limits set: $($check.MaxAgeHours) h after sign-in, $($check.IdleMinutes) min idle."
+    # Apply now: shorter limits may end the current session straight away (the status check does that).
+    Start-UiJob -Name 'Apply session limits' -Quiet -Parameters @{ H = $check.MaxAgeHours; M = $check.IdleMinutes } -ScriptBlock {
+        param($H, $M) Set-TkSessionLimit -MaxAgeHours $H -IdleMinutes $M
+    } -OnComplete { Update-ConnectionStatus }
+    $ui.MaxAgeHoursBox.Text = [string]$check.MaxAgeHours
+    $ui.IdleMinutesBox.Text = [string]$check.IdleMinutes
+    $ui.StatusText.Text = "Session limits saved: $($check.MaxAgeHours) hour(s) after sign-in, $($check.IdleMinutes) minute(s) without use."
+}
+$ui.SaveSessionButton.Add_Click({ Save-SessionLimit })
+foreach ($box in $ui.MaxAgeHoursBox, $ui.IdleMinutesBox) {
+    $box.Add_KeyDown({ if ($_.Key -eq 'Return') { Save-SessionLimit; $_.Handled = $true } })
+}
 
 $ui.ExportLogButton.Add_Click({
     $text = $ui.LogBox.Text

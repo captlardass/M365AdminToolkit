@@ -219,6 +219,45 @@ try {
     Check 'Disconnect fails closed when the sign-out does not take' ($err -match 'Could not sign out' -and -not $global:TkSession) $err
     $env:FAKE_STUCK = ''
     #endregion
+
+    #region Editing the limits from Settings (Core) and applying them (worker)
+    Import-Module "$Root\Core\Toolkit.Core.psm1" -Force
+    $l = Get-TkSessionLimit -Settings $null
+    Check 'Settings shows the defaults without settings.json' ($l.MaxAgeHours -eq 8 -and $l.IdleMinutes -eq 60) ($l | ConvertTo-Json -Compress)
+    $l = Get-TkSessionLimit -Settings ([pscustomobject]@{ Session = [pscustomobject]@{ MaxAgeHours = 30; IdleMinutes = 20 } })
+    Check 'Settings shows what the worker enforces (bad hours -> default, good minutes kept)' ($l.MaxAgeHours -eq 8 -and $l.IdleMinutes -eq 20) ($l | ConvertTo-Json -Compress)
+
+    $t = Test-TkSessionLimit -MaxAgeHours ' 4 ' -IdleMinutes '15'
+    Check 'Valid input is accepted' (-not $t.Problems.Count -and $t.MaxAgeHours -eq 4 -and $t.IdleMinutes -eq 15) ($t | ConvertTo-Json -Compress)
+    foreach ($bad in @(@('0', '15'), @('25', '15'), @('2.5', '15'), @('4', '0'), @('4', '1441'), @('x', ''))) {
+        $t = Test-TkSessionLimit -MaxAgeHours $bad[0] -IdleMinutes $bad[1]
+        Check "Invalid input is refused: hours '$($bad[0])', minutes '$($bad[1])'" ($t.Problems.Count -gt 0) ($t.Problems -join ' ')
+    }
+
+    $file = Join-Path $fakeRoot 'Config\settings.json'
+    Save-TkSessionLimit -Path $file -MaxAgeHours 4 -IdleMinutes 15
+    $saved = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+    Check 'Saving creates settings.json when there is none' ($saved.Session.MaxAgeHours -eq 4 -and $saved.Session.IdleMinutes -eq 15) ''
+    Set-Content -LiteralPath $file -Encoding UTF8 -Value '{ "Graph": { "TenantId": "t", "ClientId": "c", "CertificateThumbprint": "x" }, "Session": { "_comment": "keep me", "MaxAgeHours": 8, "IdleMinutes": 60 } }'
+    Save-TkSessionLimit -Path $file -MaxAgeHours 6 -IdleMinutes 30
+    $saved = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+    Check 'Saving keeps every other setting' ($saved.Graph.ClientId -eq 'c' -and $saved.Session._comment -eq 'keep me' -and $saved.Session.MaxAgeHours -eq 6 -and $saved.Session.IdleMinutes -eq 30) ($saved | ConvertTo-Json -Compress -Depth 5)
+    Set-Content -LiteralPath $file -Encoding UTF8 -Value '{ "Graph": { broken'
+    $err = Get-Error { Save-TkSessionLimit -Path $file -MaxAgeHours 6 -IdleMinutes 30 }
+    Check 'An unreadable settings.json is left alone, not overwritten' ($err -match 'left unchanged' -and (Get-Content -LiteralPath $file -Raw) -match 'broken') $err
+
+    $global:TkSettings = $null
+    Set-TkSessionLimit -MaxAgeHours 2 -IdleMinutes 10
+    $p = Get-TkSessionPolicy
+    Check 'Saved limits apply to the running worker at once' ($p.MaxAgeHours -eq 2 -and $p.IdleMinutes -eq 10) ($p | ConvertTo-Json -Compress)
+    Reset-Fakes
+    Connect-TkGraph
+    $global:TkSession.LastUsed = (Get-Date).AddMinutes(-20)
+    $global:TkSettings = $null
+    Set-TkSessionLimit -MaxAgeHours 8 -IdleMinutes 15
+    Confirm-TkSession
+    Check 'Tightening the idle limit ends a session that is now over it' (-not (Test-TkGraphConnected) -and $global:TkSignOutReason -match 'idle') $global:TkSignOutReason
+    #endregion
 }
 catch { Check 'Suite ran to the end' $false $_.Exception.Message }
 finally {

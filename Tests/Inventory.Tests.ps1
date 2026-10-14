@@ -132,14 +132,60 @@ Check 'A failed install warns and does not stop the rest' (@($warnings).Count -e
 Check 'NuGet provider present: not reinstalled' (-not $global:TkFakeProvider) ''
 Remove-Item Function:\Install-Module, Function:\Get-PackageProvider, Function:\Install-PackageProvider
 
+# Module folders and locations: on screen only, so paths are expected here.
+$folders = @(Get-TkModuleFolder -ModulePath "$userBase;$allBase\;;$userBase;C:\Does\Not\Exist\Modules")
+Check 'Folders: unique, in order, trailing slash trimmed' ((@($folders | ForEach-Object Path) -join '|') -eq "$userBase|$allBase|C:\Does\Not\Exist\Modules") "$($folders.Count) folder(s)"
+Check 'Folders: scope and existence reported' ($folders[0].Scope -eq 'CurrentUser' -and $folders[1].Scope -eq 'AllUsers' -and -not $folders[2].Exists) ''
+$where = @(Get-TkModuleLocation -Name 'Microsoft.Graph.Authentication' -Available $installed)
+Check 'Locations: every copy of the named module, oldest first' ($where.Count -eq 2 -and $where[0].Version -eq '2.25.0' -and $where[1].Path -eq (Join-Path $userBase 'Microsoft.Graph.Authentication\2.30.0')) "$($where.Count) copies"
+
+# Uninstalling: fake PowerShellGet again, nothing touches the real machine.
+function global:Uninstall-Module {
+    param($Name, $RequiredVersion, [switch] $Force, $Confirm, $ErrorAction)
+    if ($Name -eq 'Broken.Module') { throw 'Simulated uninstall failure' }
+    $global:TkFakeRemovals += , ([pscustomobject]@{ Name = $Name; Version = $RequiredVersion; Force = [bool]$Force })
+}
+function Managed([string] $Name, [string] $Version, [string] $Base = $userBase) {
+    [pscustomobject]@{ Name = $Name; Version = $Version; InstalledLocation = Join-Path $Base "$Name\$Version" }
+}
+$managed = @(
+    Managed 'Microsoft.Graph.Authentication' '2.30.0'
+    Managed 'Microsoft.Graph.Users' '2.30.0'
+    Managed 'Microsoft.Graph' '2.30.0'
+    Managed 'MicrosoftTeams' '7.0.0'
+    Managed 'MicrosoftTeams' '6.0.0'
+    Managed 'AzureAD' '2.0.2.182' $allBase
+    Managed 'Broken.Module' '1.0.0'
+)
+$available = @($managed | ForEach-Object { Fake $_.Name $_.Version (Split-Path (Split-Path $_.InstalledLocation -Parent) -Parent) }) + @(Fake 'MicrosoftTeams' '5.0.0' 'C:\Elsewhere')
+$loaded = @(Join-Path $userBase 'Microsoft.Graph.Users\2.30.0\Microsoft.Graph.Users.dll')
+$names = 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Users', 'Microsoft.Graph', 'MicrosoftTeams', 'AzureAD', 'Broken.Module'
+$global:TkFakeRemovals = @()
+$whatIf = @(Uninstall-TkInstalledModule -Name $names -Installed $managed -Available $available -LoadedPath $loaded -Elevated $false -WhatIf)
+Check 'Uninstall -WhatIf removes nothing' (-not $global:TkFakeRemovals.Count -and @($whatIf | Where-Object Status -eq 'WhatIf').Count -eq 5) "$($global:TkFakeRemovals.Count) removal(s)"
+$warnings = $null
+$removed = @(Uninstall-TkInstalledModule -Name $names -Installed $managed -Available $available -LoadedPath $loaded -Elevated $false -WarningVariable warnings -WarningAction SilentlyContinue)
+function Removal($Name, $Version) { @($removed | Where-Object { $_.Module -eq $Name -and $_.Version -eq $Version })[0] }
+Check 'Uninstall removes every managed version, without -Force' (@($global:TkFakeRemovals | Where-Object { $_.Name -eq 'MicrosoftTeams' -and -not $_.Force }).Count -eq 2) ''
+Check 'Uninstall: Graph bundle first, Authentication last' ($global:TkFakeRemovals[0].Name -eq 'Microsoft.Graph' -and $global:TkFakeRemovals[-1].Name -eq 'Microsoft.Graph.Authentication') (@($global:TkFakeRemovals | ForEach-Object Name) -join ',')
+Check 'Uninstall: a loaded module is skipped (fail closed)' ((Removal 'Microsoft.Graph.Users' '2.30.0').Status -eq 'Skipped' -and -not @($global:TkFakeRemovals | Where-Object Name -eq 'Microsoft.Graph.Users').Count) ''
+Check 'Uninstall: all-users copy without admin fails, untouched' ((Removal 'AzureAD' '2.0.2.182').Status -eq 'Failed' -and -not @($global:TkFakeRemovals | Where-Object Name -eq 'AzureAD').Count) ''
+Check 'Uninstall: copy not installed by Install-Module is skipped' ((Removal 'MicrosoftTeams' '5.0.0').Status -eq 'Skipped') ''
+Check 'Uninstall: a failure warns and does not stop the rest' ((Removal 'Broken.Module' '1.0.0').Status -eq 'Failed' -and @($warnings).Count -eq 1 -and (Removal 'Microsoft.Graph.Authentication' '2.30.0').Status -eq 'Removed') "warnings=$(@($warnings).Count)"
+Check 'Uninstall: all-users copy as admin is removed' ((@(Uninstall-TkInstalledModule -Name 'AzureAD' -Installed $managed -Available $available -LoadedPath @() -Elevated $true)[0]).Status -eq 'Removed') ''
+Check 'Uninstall: no paths in the result rows (they contain the user name)' (-not @($removed | Where-Object { ($_.PSObject.Properties.Value -join ' ') -like '*:\*' }).Count) ''
+Remove-Item Function:\Uninstall-Module
+
 # The main window still loads, with the new tab's controls.
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 try {
     Import-TkStyle -Path "$Root\Core\Styles.xaml"
     $ui = Import-TkXaml -Path "$Root\Core\MainWindow.xaml"
-    $missing = @('ModulesTab', 'SettingsTab', 'SettingsTabHeader', 'InventorySection', 'InventoryGrid', 'InventorySummary', 'CheckUpdatesButton', 'RescanModulesButton', 'ShowGraphSubCheck', 'UpdateModulesButton' | Where-Object { -not $ui[$_] })
+    $missing = @('ModulesTab', 'SettingsTab', 'SettingsTabHeader', 'SettingsPage', 'InventorySection', 'ThemeBox', 'MaxAgeHoursBox', 'IdleMinutesBox', 'SaveSessionButton', 'OpenExcelButton', 'InventoryGrid', 'InventorySummary', 'CheckUpdatesButton', 'RescanModulesButton', 'ShowGraphSubCheck', 'UpdateModulesButton', 'UninstallModulesButton', 'ModuleFoldersButton' | Where-Object { -not $ui[$_] })
     Check 'MainWindow.xaml loads with inventory controls' (-not $missing.Count) ($missing -join ',')
-    Check 'Modules is the first page, Settings (with the inventory) the second' ($ui.MainTabs.Items[0] -eq $ui.ModulesTab -and $ui.MainTabs.Items[1] -eq $ui.SettingsTab -and $ui.SettingsTab.Content -eq $ui.InventorySection) ''
+    Check 'Modules is the first page, Settings (with the inventory) the second' ($ui.MainTabs.Items[0] -eq $ui.ModulesTab -and $ui.MainTabs.Items[1] -eq $ui.SettingsTab -and $ui.SettingsTab.Content -eq $ui.SettingsPage) ''
+    $inSettings = { param($e) while ($e -and $e -ne $ui.SettingsPage) { $e = [System.Windows.LogicalTreeHelper]::GetParent($e) }; [bool]$e }
+    Check 'Theme, session limits and installed modules are on the Settings page' ((& $inSettings $ui.ThemeBox) -and (& $inSettings $ui.MaxAgeHoursBox) -and (& $inSettings $ui.InventoryGrid)) ''
 }
 catch { Check 'MainWindow.xaml loads with inventory controls' $false $_.Exception.Message }
 

@@ -1433,6 +1433,118 @@ function Update-TkInstalledModule {
     }
 }
 
+function Get-TkModuleFolder {
+    <#
+    .SYNOPSIS
+        The folders PowerShell loads modules from ($env:PSModulePath), in search order, with their
+        Scope and whether they exist. Paths contain the user name: show them on screen, never log them.
+    #>
+    param([string] $ModulePath = $env:PSModulePath)
+    $seen = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($p in @($ModulePath -split ';')) {
+        $path = ([string]$p).Trim().TrimEnd('\')
+        if (-not $path -or -not $seen.Add($path)) { continue }
+        [pscustomobject]@{
+            Path   = $path
+            Scope  = Get-TkModuleScope $path
+            Exists = Test-Path -LiteralPath $path -PathType Container
+        }
+    }
+}
+
+function Get-TkModuleLocation {
+    <# Every installed copy of the named modules: Module, Version, Scope and the folder it is in (on screen only). #>
+    param([Parameter(Mandatory)] [string[]] $Name, [object[]] $Available)
+    if (-not $PSBoundParameters.ContainsKey('Available')) { $Available = @(Get-Module -ListAvailable -Name $Name -ErrorAction SilentlyContinue) }
+    $Available | Where-Object { $_ -and $_.Name -in $Name } | Sort-Object Name, { ConvertTo-TkVersion $_.Version } | ForEach-Object {
+        [pscustomobject]@{ Module = $_.Name; Version = [string]$_.Version; Scope = Get-TkModuleScope $_.ModuleBase; Path = $_.ModuleBase }
+    }
+}
+
+function Uninstall-TkInstalledModule {
+    <#
+    .SYNOPSIS
+        Removes every installed version of the named modules with Uninstall-Module, without any prompt.
+        Outputs one row per version (Module, Version, Scope, Status, Message) with Status Removed,
+        Failed, Skipped or WhatIf. Fails closed: a copy that is loaded in this process (its files are
+        locked, so a removal would leave it half deleted), an all-users copy without admin rights and a
+        copy that Install-Module didn't install are left alone.
+    .PARAMETER Installed
+        Get-InstalledModule results (Name, Version, InstalledLocation). Defaults to the real ones.
+    .PARAMETER Available
+        Get-Module -ListAvailable results (Name, Version, ModuleBase). Defaults to the real ones.
+    .PARAMETER LoadedPath
+        Files loaded in this process. Defaults to every loaded assembly and module.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)] [string[]] $Name,
+        [object[]] $Installed,
+        [object[]] $Available,
+        [string[]] $LoadedPath,
+        [Nullable[bool]] $Elevated
+    )
+    if (-not $PSBoundParameters.ContainsKey('Installed')) {
+        if (-not (Get-Command Get-InstalledModule -ErrorAction SilentlyContinue)) { throw 'Get-InstalledModule (PowerShellGet) is not available in this PowerShell.' }
+        $Installed = @(Get-InstalledModule -Name $Name -AllVersions -ErrorAction SilentlyContinue)
+    }
+    if (-not $PSBoundParameters.ContainsKey('Available')) { $Available = @(Get-Module -ListAvailable -Name $Name -ErrorAction SilentlyContinue) }
+    if (-not $PSBoundParameters.ContainsKey('LoadedPath')) {
+        $LoadedPath = @([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { -not $_.IsDynamic } | ForEach-Object { try { $_.Location } catch { } }) +
+            @(Get-Module | ForEach-Object Path)
+    }
+    if ($null -eq $Elevated) { $Elevated = Test-TkElevated }
+    $LoadedPath = @($LoadedPath | Where-Object { $_ })
+
+    # Dependants first: the Graph bundles need their sub-modules, and every Graph module needs Authentication.
+    $rank = { param($n) if ($n -in 'Microsoft.Graph', 'Microsoft.Graph.Beta') { 0 } elseif ($n -eq 'Microsoft.Graph.Authentication') { 2 } else { 1 } }
+    $names = @($Name | Where-Object { $_ } | Sort-Object -Unique | Sort-Object { & $rank $_ }, { $_ })
+
+    foreach ($n in $names) {
+        $managed = @($Installed | Where-Object { $_ -and $_.Name -eq $n })
+        $managedPaths = @($managed | ForEach-Object { ([string]$_.InstalledLocation).TrimEnd('\') })
+        foreach ($copy in @($Available | Where-Object { $_ -and $_.Name -eq $n })) {
+            if ($managedPaths -contains ([string]$copy.ModuleBase).TrimEnd('\')) { continue }
+            [pscustomobject]@{ Module = $n; Version = [string]$copy.Version; Scope = Get-TkModuleScope $copy.ModuleBase; Status = 'Skipped'
+                Message = 'Not installed with Install-Module, so it is not removed here. Use Module folders to find it and delete it by hand.' }
+        }
+        foreach ($m in $managed | Sort-Object { ConvertTo-TkVersion $_.Version } -Descending) {
+            $location = ([string]$m.InstalledLocation).TrimEnd('\')
+            $result = [ordered]@{ Module = $n; Version = [string]$m.Version; Scope = Get-TkModuleScope $location; Status = ''; Message = '' }
+            $target = '{0} {1} ({2})' -f $n, $result.Version, $result.Scope
+            if (-not $location -or $result.Scope -in 'System', 'Other') {
+                $result.Status = 'Skipped'
+                $result.Message = "Installed in a $($result.Scope) folder, which the toolkit doesn't remove from."
+            }
+            elseif (@($LoadedPath | Where-Object { $_.StartsWith("$location\", [StringComparison]::OrdinalIgnoreCase) }).Count) {
+                $result.Status = 'Skipped'
+                $result.Message = 'In use by the toolkit (its files are locked). Restart the toolkit and remove it before connecting.'
+            }
+            elseif ($result.Scope -eq 'AllUsers' -and -not $Elevated) {
+                $result.Status = 'Failed'
+                $result.Message = 'Installed for all users: run the toolkit as administrator to remove it.'
+            }
+            elseif (-not $PSCmdlet.ShouldProcess($target, 'Uninstall module')) {
+                $result.Status = 'WhatIf'
+            }
+            else {
+                try {
+                    Write-Information "Removing $target..."
+                    Uninstall-Module -Name $n -RequiredVersion $result.Version -Confirm:$false -ErrorAction Stop
+                    $result.Status = 'Removed'
+                    Write-Information "Removed: $target"
+                }
+                catch {
+                    $result.Status = 'Failed'
+                    $result.Message = $_.Exception.Message
+                    Write-Warning "Could not remove ${target}: $($_.Exception.Message)"
+                }
+            }
+            [pscustomobject]$result
+        }
+    }
+}
+
 #endregion
 
 #region Results, XAML & logging
@@ -1634,6 +1746,187 @@ function Write-TkLogFile {
 
 #endregion
 
+#region Session limits (Config\settings.json)
+
+# Same defaults and accepted ranges as Get-TkSessionPolicy in Toolkit.Worker.ps1, which enforces them.
+$script:TkSessionDefaults = @{ MaxAgeHours = 8; IdleMinutes = 60 }
+
+function Get-TkSessionLimit {
+    <# The session limits in effect for these settings (defaults for missing or out-of-range values). #>
+    param($Settings)
+    $limit = [pscustomobject]@{ MaxAgeHours = $script:TkSessionDefaults.MaxAgeHours; IdleMinutes = $script:TkSessionDefaults.IdleMinutes }
+    $cfg = if ($Settings -and $Settings.PSObject.Properties['Session']) { $Settings.Session }
+    if ($cfg) {
+        $v = $cfg.MaxAgeHours -as [double]
+        if ($v -gt 0 -and $v -le 24) { $limit.MaxAgeHours = $v }
+        $v = $cfg.IdleMinutes -as [double]
+        if ($v -gt 0 -and $v -le 1440) { $limit.IdleMinutes = $v }
+    }
+    $limit
+}
+
+function Test-TkSessionLimit {
+    <# Checks what was typed in Settings. Returns @{ MaxAgeHours; IdleMinutes; Problems }. Whole numbers only. #>
+    param([string] $MaxAgeHours, [string] $IdleMinutes)
+    $problems = New-Object System.Collections.Generic.List[string]
+    $hours = 0
+    $minutes = 0
+    if (-not [int]::TryParse($MaxAgeHours.Trim(), [ref]$hours) -or $hours -lt 1 -or $hours -gt 24) { $problems.Add('Hours after sign-in must be a whole number from 1 to 24.') }
+    if (-not [int]::TryParse($IdleMinutes.Trim(), [ref]$minutes) -or $minutes -lt 1 -or $minutes -gt 1440) { $problems.Add('Minutes without use must be a whole number from 1 to 1440.') }
+    [pscustomobject]@{ MaxAgeHours = $hours; IdleMinutes = $minutes; Problems = $problems.ToArray() }
+}
+
+function Save-TkSessionLimit {
+    <#
+    .SYNOPSIS
+        Writes the session limits into settings.json, keeping every other setting (e.g. app-only sign-in).
+        Refuses to touch a file it cannot read, rather than overwrite it.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [ValidateRange(1, 24)] [int] $MaxAgeHours,
+        [Parameter(Mandatory)] [ValidateRange(1, 1440)] [int] $IdleMinutes
+    )
+    $settings = [pscustomobject]@{}
+    if (Test-Path -LiteralPath $Path) {
+        $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+        if ($raw -and $raw.Trim()) {
+            try { $settings = $raw | ConvertFrom-Json -ErrorAction Stop }
+            catch { throw "settings.json could not be read, so it was left unchanged: $($_.Exception.Message)" }
+        }
+    }
+    else {
+        $dir = Split-Path -Path $Path -Parent
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    }
+    $session = if ($settings.PSObject.Properties['Session'] -and $settings.Session -is [pscustomobject]) { $settings.Session } else { [pscustomobject]@{} }
+    $session | Add-Member -NotePropertyName MaxAgeHours -NotePropertyValue $MaxAgeHours -Force
+    $session | Add-Member -NotePropertyName IdleMinutes -NotePropertyValue $IdleMinutes -Force
+    $settings | Add-Member -NotePropertyName Session -NotePropertyValue $session -Force
+    ConvertTo-TkJson $settings | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+#endregion
+
+#region Open in Excel
+
+function ConvertTo-TkExcelData {
+    <#
+    .SYNOPSIS
+        Turns flat result rows (string values) into a 2-D cell array for Excel, header row first, with a
+        type per column: Number, Date, DateTime or Text. A column is a number or date column only when
+        every non-empty value is one; everything else stays text, so serials like '0042' or versions like
+        '10.0.26200' are not mangled and a value starting with '=' is never run as a formula.
+    #>
+    param([object[]] $Rows)
+
+    $rows = @($Rows | Where-Object { $null -ne $_ })
+    if (-not $rows.Count) { return }
+    $names = @($rows[0].PSObject.Properties.Name)
+    $invariant = [System.Globalization.CultureInfo]::InvariantCulture
+    $kinds = foreach ($n in $names) {
+        $values = @($rows | ForEach-Object { [string]$_.$n } | Where-Object { $_ -ne '' })
+        if (-not $values.Count) { 'Text' }
+        elseif (-not @($values | Where-Object { $_ -notmatch '^-?(0|[1-9]\d{0,14})(\.\d+)?$' }).Count) { 'Number' }
+        # Date-only: no time, or always midnight (the toolkit writes dates as 'yyyy-MM-dd 00:00:00').
+        elseif (-not @($values | Where-Object { $_ -notmatch '^\d{4}-\d{2}-\d{2}( 00:00(:00)?)?$' }).Count) { 'Date' }
+        elseif (-not @($values | Where-Object { $_ -notmatch '^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}(:\d{2})?)?$' }).Count) { 'DateTime' }
+        else { 'Text' }
+    }
+    $kinds = @($kinds)
+    $formats = [string[]]@('yyyy-MM-dd HH:mm:ss', 'yyyy-MM-dd HH:mm', 'yyyy-MM-dd')
+
+    $cells = New-Object 'object[,]' ($rows.Count + 1), $names.Count
+    for ($c = 0; $c -lt $names.Count; $c++) {
+        $cells[0, $c] = $names[$c]
+        for ($r = 0; $r -lt $rows.Count; $r++) {
+            $text = [string]$rows[$r].($names[$c])
+            $cells[($r + 1), $c] = if ($text -eq '') { $null }
+                elseif ($kinds[$c] -eq 'Number') { [double]::Parse($text, $invariant) }
+                elseif ($kinds[$c] -in 'Date', 'DateTime') {
+                    # As an Excel serial number; a date that doesn't exist (2026-02-30) stays as text.
+                    $date = [datetime]::MinValue
+                    if ([datetime]::TryParseExact($text, $formats, $invariant, 'None', [ref]$date)) { $date.ToOADate() } else { $text }
+                }
+                else { $text }
+        }
+    }
+    [pscustomobject]@{ Names = $names; Kinds = $kinds; Cells = $cells; RowCount = $rows.Count + 1 }
+}
+
+function Open-TkExcelTable {
+    <#
+    .SYNOPSIS
+        Opens rows as a formatted table (filters, typed columns) in a new, unsaved Excel workbook.
+        Built through Excel automation, so no temporary file with the data is written. Needs desktop Excel.
+    #>
+    param(
+        [Parameter(Mandatory)] [object[]] $Rows,
+        [string] $SheetName = 'Results'
+    )
+    $data = ConvertTo-TkExcelData -Rows $Rows
+    if (-not $data) { throw 'There is nothing to open.' }
+
+    try { $excel = New-Object -ComObject Excel.Application -ErrorAction Stop }
+    catch { throw 'Microsoft Excel (desktop) is not installed or could not be started. Use Export CSV instead.' }
+
+    $book = $sheet = $range = $null
+    try {
+        $excel.ScreenUpdating = $false
+        # Format codes in Excel's own language (Norwegian Excel wants its own year letter, not 'yyyy'): ask it for the letters.
+        # xlYearCode 19, xlMonthCode 20, xlDayCode 21, xlHourCode 22, xlMinuteCode 23
+        $code = @{}
+        foreach ($k in @{ Y = 19; M = 20; D = 21; H = 22; N = 23 }.GetEnumerator()) { $code[$k.Key] = [string]$excel.International($k.Value) }
+        $dateFormat = ($code.Y * 4) + '-' + ($code.M * 2) + '-' + ($code.D * 2)
+        $localFormats = @{ Date = $dateFormat; DateTime = $dateFormat + ' ' + ($code.H * 2) + ':' + ($code.N * 2) }
+        $book = $excel.Workbooks.Add()
+        $sheet = $book.Worksheets.Item(1)
+        # Sheet names: at most 31 characters, none of : \ / ? * [ ]
+        $name = ($SheetName -replace '[:\\/\?\*\[\]]', ' ').Trim()
+        if ($name.Length -gt 31) { $name = $name.Substring(0, 31).Trim() }
+        if ($name) { $sheet.Name = $name }
+
+        $columns = $data.Names.Count
+        for ($c = 0; $c -lt $columns; $c++) {
+            $column = $sheet.Range($sheet.Cells(1, $c + 1), $sheet.Cells($data.RowCount, $c + 1))
+            # Formats go on before the values: in a Text (@) column Excel stores exactly what it is given.
+            # Number columns keep the default format: some Excel languages (e.g. Norwegian) refuse 'General' here.
+            $kind = $data.Kinds[$c]
+            if ($kind -eq 'Text') { $column.NumberFormat = '@' }
+            elseif ($localFormats.ContainsKey($kind)) { $column.NumberFormatLocal = [string]$localFormats[$kind] }
+            [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($column)
+        }
+        $header = $sheet.Range($sheet.Cells(1, 1), $sheet.Cells(1, $columns))
+        $header.NumberFormat = '@'
+        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($header)
+
+        $range = $sheet.Range($sheet.Cells(1, 1), $sheet.Cells($data.RowCount, $columns))
+        $range.Value2 = $data.Cells
+        # xlSrcRange = 1, xlYes = 1 (the first row holds the headers)
+        $table = $sheet.ListObjects.Add(1, $range, [Type]::Missing, 1)
+        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($table)
+        [void]$range.Columns.AutoFit()
+        # Keep very wide text columns readable.
+        foreach ($col in @($range.Columns)) {
+            if ($col.ColumnWidth -gt 60) { $col.ColumnWidth = 60 }
+            [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($col)
+        }
+        $book.Saved = $true    # nothing of value to lose yet: no save prompt if it is closed straight away
+        $excel.ScreenUpdating = $true
+        $excel.Visible = $true
+        $excel.UserControl = $true     # the user owns Excel now; it stays open when we let go
+    }
+    catch {
+        try { if ($book) { $book.Close($false) }; $excel.Quit() } catch { }
+        throw "Could not open the results in Excel: $($_.Exception.Message)"
+    }
+    finally {
+        foreach ($o in $range, $sheet, $book, $excel) { if ($o) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($o) } }
+    }
+}
+
+#endregion
+
 Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm, Get-TkParameterValue,
     New-TkWorker, Start-TkJob, Receive-TkJob, Complete-TkJob, Stop-TkJob, Invoke-TkWorkerCommand,
     ConvertTo-TkFlatObject, ConvertTo-TkDataTable, Import-TkStyle, Import-TkXaml, Write-TkLogFile,
@@ -1641,4 +1934,6 @@ Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm
     Split-TkList, ConvertTo-TkLabel, Get-TkSuggestedId, Get-TkScriptAnalysis, New-TkModule, Set-TkModuleTag,
     Get-TkPreference, Save-TkPreference, ConvertTo-TkJson, Get-TkReadiness,
     Get-TkDryRunProfile, ConvertTo-TkCodeLine, Get-TkFileSummary,
-    Get-TkModuleInventory, Get-TkGalleryVersion, Test-TkElevated, Get-TkModuleUpdatePlan, Update-TkInstalledModule
+    Get-TkModuleInventory, Get-TkGalleryVersion, Test-TkElevated, Get-TkModuleUpdatePlan, Update-TkInstalledModule,
+    Get-TkModuleFolder, Get-TkModuleLocation, Uninstall-TkInstalledModule,
+    Get-TkSessionLimit, Test-TkSessionLimit, Save-TkSessionLimit, ConvertTo-TkExcelData, Open-TkExcelTable

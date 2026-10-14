@@ -25,7 +25,8 @@ input form, a results grid, CSV export and a safe dry run.
   are never allowed to change anything.
 - **Easy to find.** Search by name, category, tag or description. Group by category, tag or name, and star
   favourites.
-- **Results you can use.** Output lands in a sortable grid and exports to CSV in one click.
+- **Results you can use.** Output lands in a sortable grid, opens as an Excel table, or exports to CSV in one
+  click.
 - **Tenant readiness.** Modules that can measure a security-posture factor (e.g. how many users have a
   passkey) show it after the run as a percentage with counts, or as Pass / Warn / Fail.
 - **Stays responsive.** Scripts run in a background worker, so the window never freezes and long runs can
@@ -125,7 +126,10 @@ system settings.
 4. For modules that change things, leave **Dry run (WhatIf)** ticked first and click **Run**. Check the
    *Results* and *Blocked changes* tabs.
 5. When you're happy, untick **Dry run** and run again. The toolkit asks for confirmation before a real run.
-6. Use **Export CSV...** to save the results. The *Log* tab shows progress, warnings and errors, and
+6. Use **Open in Excel** to see the results as a filterable Excel table. Numbers and dates get real
+   number and date types, while IDs, serial numbers and anything that looks like a formula stay text. The
+   workbook is built straight in Excel and isn't saved anywhere until you save it. This needs desktop
+   Excel. Use **Export CSV...** to save the results as a file. The *Log* tab shows progress, warnings and errors, and
    **Export log...** saves it as a text file. The export holds everything shown on screen, including
    blocked changes, which can name users or mailboxes. The daily file in `Logs\` deliberately leaves
    those out.
@@ -159,8 +163,10 @@ everything. The same happens if a script connects to another tenant on its own. 
 | The toolkit closed | always |
 
 The check runs before every connect and module run, and once a minute while the toolkit is idle. When a
-session ends, the header says why until you sign in again. The limits are set in `Config\settings.json`
-(see `settings.example.json`).
+session ends, the header says why until you sign in again. Change the two limits under **Settings >
+Sign-in sessions**. They are saved in `Config\settings.json` (so they apply to everyone using that copy of
+the toolkit) and take effect at once: a shorter limit can end the current session straight away. Midnight,
+sleep and closing the toolkit always end a session and can't be switched off.
 
 **Nothing is reused from an earlier launch.** Graph signs in with an in-memory token cache
 (`-ContextScope Process`), so no token is written to disk. Sign-in also bypasses WAM, the Windows sign-in
@@ -174,7 +180,7 @@ is ended before use. That includes one from an earlier launch in the same PowerS
 
 The toolkit follows the Windows app mode (*Settings > Personalisation > Colours > Choose your app mode*).
 If you change it while the toolkit is open, the toolkit switches when you return to its window. To always
-use one mode, pick **Light** or **Dark** in the **Theme** box at the bottom right. **Match Windows** goes back
+use one mode, pick **Light** or **Dark** under **Settings > Appearance**. **Match Windows** goes back
 to following Windows. The choice is saved per user.
 
 ### Checking installed PowerShell modules
@@ -211,6 +217,20 @@ and only updates those. A version mismatch always brings `Microsoft.Graph.Authen
   Otherwise the new version is installed for the current user, and the confirmation says so.
 - Retired modules are never removed automatically. Move the scripts that use them to Microsoft Graph first.
 - **Restart the toolkit afterwards.** The running session keeps the module versions it already loaded.
+
+**Module folders** lists the folders PowerShell loads modules from (`$env:PSModulePath`, with their scope) and,
+if rows are selected, where each installed version of those modules is. It then offers to open the selected
+module's folder, or your own module folder, in Explorer. The paths are only shown on screen, never logged.
+
+**Uninstall** removes every installed version of the selected modules with `Uninstall-Module`, after you confirm.
+It fails closed and leaves these alone, saying why:
+- versions the toolkit has loaded (for example after **Connect Graph**): their files are locked, so removing them
+  would leave a half-deleted module. Restart the toolkit and uninstall before connecting.
+- versions installed for all users, unless the toolkit runs as administrator.
+- copies that weren't installed with `Install-Module` (use **Module folders** to find and delete them by hand).
+
+Removing the `Microsoft.Graph` bundle doesn't remove its sub-modules: tick **Show Graph sub-modules** and select
+them too. Bundles are removed before their sub-modules, and `Microsoft.Graph.Authentication` last.
 
 ## Included modules
 

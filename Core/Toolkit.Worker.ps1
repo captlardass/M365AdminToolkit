@@ -74,6 +74,15 @@ function Get-TkSessionPolicy {
     [pscustomobject]@{ MaxAgeHours = $maxAge; IdleMinutes = $idle }
 }
 
+function Set-TkSessionLimit {
+    <# Applies limits saved from Settings to this worker at once (Get-TkSessionPolicy still validates them). #>
+    param([Parameter(Mandatory)] [double] $MaxAgeHours, [Parameter(Mandatory)] [double] $IdleMinutes)
+    if (-not $global:TkSettings) { $global:TkSettings = [pscustomobject]@{} }
+    $global:TkSettings | Add-Member -NotePropertyName Session -Force -NotePropertyValue ([pscustomobject]@{ MaxAgeHours = $MaxAgeHours; IdleMinutes = $IdleMinutes })
+    $p = Get-TkSessionPolicy
+    Write-Information "Session limits: sign out $($p.MaxAgeHours) hour(s) after sign-in, or after $($p.IdleMinutes) minute(s) without use."
+}
+
 function New-TkSession {
     param([Parameter(Mandatory)] [string] $TenantId, [datetime] $Now = (Get-Date), $AwakeTime = (Get-TkAwakeTime))
     [pscustomobject]@{ TenantId = $TenantId; TenantName = ''; SignedIn = $Now; LastUsed = $Now; AwakeAtSignIn = $AwakeTime }
