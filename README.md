@@ -14,8 +14,11 @@ input form, a results grid, CSV export and a safe dry run.
 - **Bring your own scripts.** *+ Add module* turns an existing `.ps1` into a module. It reads the `param()`
   block to build the form and detects Graph scopes and Exchange Online use. It also warns about
   things that won't work in a GUI, such as `Read-Host` prompts or the script connecting on its own.
-- **Sign in once.** Microsoft Graph and Exchange Online sessions are kept between runs, so you don't sign in
-  again for every script. Each module only asks for the Graph permissions it declares.
+- **Sign in once a session, never by accident.** Microsoft Graph and Exchange Online sessions are kept between
+  runs, so you don't sign in again for every script. Each module only asks for the Graph permissions it
+  declares. Sessions end at midnight, after a set time or idle period, when the PC sleeps and when the toolkit
+  closes. The header always shows the tenant name and tenant ID you're working in. See
+  [Sign-in sessions and tenants](#sign-in-sessions-and-tenants).
 - **Safe by default.** Modules that change things open in *dry-run* mode. Scripts that support `-WhatIf`
   describe their own changes. For scripts that don't, the toolkit blocks every Microsoft 365 write and lists
   it in the *Blocked changes* tab, so you can see what *would* have happened. Modules marked read-only
@@ -44,12 +47,34 @@ input form, a results grid, CSV export and a safe dry run.
 
 ## Installation
 
-1. **Get the files.** Clone the repository, or download the ZIP and extract it.
+1. **Download and install it.** Download **`Get-M365AdminToolkit.ps1`** from the latest
+   [release](https://github.com/captlardass/M365AdminToolkit/releases/latest), then run it in a normal PowerShell
+   window. Don't use *Run as administrator*:
 
-2. **Install it.** Double-click **`Install-Toolkit.cmd`**. No admin rights are needed. The installer:
-   - copies the toolkit to `%LOCALAPPDATA%\Programs\M365AdminToolkit` and unblocks the files
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$env:USERPROFILE\Downloads\Get-M365AdminToolkit.ps1"
+   ```
+
+   It asks where to install, downloads the release, then checks it before anything runs:
+   - the ZIP's SHA-256 must match the release's checksum file
+   - every script and the file catalog that covers all other files must carry a valid signature from the same
+     publisher that signed `Get-M365AdminToolkit.ps1`
+   - no file in the ZIP may point outside the package folder
+
+   If any check fails, it stops and installs nothing. Options: `-Destination <folder>`, `-Version 1.2.0`,
+   `-IncludePrerelease`, `-DesktopShortcut`, `-Portable`, and `-NoGui` for scripted installs.
+
+   Alternatively, clone the repository or download and check the ZIP yourself (see
+   [Checking a download](#checking-a-download)), extract it and double-click **`Install-Toolkit.cmd`**.
+
+2. **What the installer does.** No admin rights are needed, and nothing is written machine-wide. The installer:
+   - copies the toolkit to the folder you choose (default `%LOCALAPPDATA%\Programs\M365AdminToolkit`) and unblocks the files
    - adds **M365 Admin Toolkit** to the Start menu and the desktop
-   - adds an uninstall entry under *Settings > Apps*
+   - adds an uninstall entry under *Settings > Apps* (for your account only)
+
+   The install folder must be private to you. Network paths, system folders such as `Program Files`, and
+   folders that other users can change are refused: anyone who can edit the scripts could run code with your
+   admin sign-ins. A new folder is created with access for you, SYSTEM and Administrators only.
 
    From PowerShell you can choose the folder or skip the desktop shortcut:
 
@@ -68,8 +93,8 @@ input form, a results grid, CSV export and a safe dry run.
    You can also skip the installer and run the toolkit straight from the extracted folder (see below). In that
    case, unblock a downloaded ZIP first: `Get-ChildItem -Recurse | Unblock-File`.
 
-3. **Install the service modules** for your user. No admin rights are needed. The toolkit's *Installed modules*
-   tab can do this for you, or run:
+3. **Install the service modules** for your user. No admin rights are needed. The toolkit's **Settings** tab
+   (*Installed PowerShell modules*) can do this for you, or run:
 
    ```powershell
    Install-Module Microsoft.Graph.Authentication, ExchangeOnlineManagement -Scope CurrentUser
@@ -100,9 +125,50 @@ system settings.
 4. For modules that change things, leave **Dry run (WhatIf)** ticked first and click **Run**. Check the
    *Results* and *Blocked changes* tabs.
 5. When you're happy, untick **Dry run** and run again. The toolkit asks for confirmation before a real run.
-6. Use **Export CSV...** to save the results. The *Log* tab shows progress, warnings and errors.
+6. Use **Export CSV...** to save the results. The *Log* tab shows progress, warnings and errors, and
+   **Export log...** saves it as a text file. The export holds everything shown on screen, including
+   blocked changes, which can name users or mailboxes. The daily file in `Logs\` deliberately leaves
+   those out.
 
 To use another tenant, click **Disconnect all** and connect again with an account in that tenant.
+
+### Sign-in sessions and tenants
+
+The toolkit works in customer tenants, so it is strict about which sign-in it uses.
+
+**The header shows the tenant.** Next to the title you see the tenant's name and tenant ID, read from the
+tenant itself, never guessed from your account's domain. (With delegated admin (GDAP) your account belongs to
+a different tenant than the one you manage.) The window title shows the same, so it's visible in the
+taskbar too. The log names the tenant at the start of every run. If the name can't be read (the sign-in
+lacks `User.Read` and Exchange isn't connected), the ID is still shown.
+
+**One tenant per session.** The first sign-in pins the session to its tenant. If Graph or Exchange then signs
+in to a different tenant, or the toolkit can't tell which tenant a sign-in belongs to, it signs out of
+everything. The same happens if a script connects to another tenant on its own. To switch tenant, click
+**Disconnect all** first.
+
+**Sessions end, and you sign in again**, at the first of:
+
+| Reason | Default |
+|---|---|
+| Midnight (the date changes) | always |
+| Time since sign-in | 8 hours (`Session.MaxAgeHours`, 1-24) |
+| No module run or connect | 60 minutes (`Session.IdleMinutes`, 1-1440) |
+| The PC slept or hibernated | always |
+| The system clock went backwards | always |
+| The toolkit closed | always |
+
+The check runs before every connect and module run, and once a minute while the toolkit is idle. When a
+session ends, the header says why until you sign in again. The limits are set in `Config\settings.json`
+(see `settings.example.json`).
+
+**Nothing is reused from an earlier launch.** Graph signs in with an in-memory token cache
+(`-ContextScope Process`), so no token is written to disk. Sign-in also bypasses WAM, the Windows sign-in
+broker. WAM silently reuses an account's tokens even after a restart, so without it the browser asks which
+account to use every time. Your own Graph WAM setting is put back straight after sign-in. Graph and Exchange
+keep connections for the whole PowerShell process, so a connection the toolkit didn't make in this launch
+is ended before use. That includes one from an earlier launch in the same PowerShell window or from a
+`Connect-MgGraph` you ran yourself.
 
 ### Light and dark mode
 
@@ -113,7 +179,10 @@ to following Windows. The choice is saved per user.
 
 ### Checking installed PowerShell modules
 
-The **Installed modules** tab lists the Microsoft 365 PowerShell modules on this PC: the two the toolkit
+The window has two pages, shown as tabs under the header: **Modules**, where you work and where the toolkit
+opens, and **Settings**. Under *Installed PowerShell modules*, **Settings** lists the Microsoft 365
+PowerShell modules on this PC. When something needs fixing, the tab says so, for example
+*Settings (1 to fix)*. The list covers the two the toolkit
 needs, common optional ones (Microsoft Graph SDK, Teams, PnP, SharePoint Online, Az.Accounts) and retired
 ones (AzureAD, MSOnline) if they are still installed. It scans when the toolkit starts. Scanning never
 changes anything; only the **Update** button does, and it asks first.
@@ -285,8 +354,8 @@ if (Test-Path Function:\Write-TkReadiness) {
 
 After the run, a **Tenant readiness** box appears beside the module's inputs. It holds a ring filled to the
 percentage and coloured by rating, the counts (e.g. "146 of 200 users have a passkey"), the "not evaluated"
-count and the thresholds. The **Pass / Warn / Fail** toggle puts the rating in large type in the ring instead of
-the percentage, and the choice is saved in your preferences. The box shows the selected module's last run in
+count and the thresholds. The **Percentage / Pass / Warn / Fail** switch picks what the ring shows in large
+type, and the choice is saved in your preferences. The box shows the selected module's last run in
 this session. It is hidden for modules that haven't reported a figure, and the inputs then use the full width.
 
 - **Count everything the module checked**, not only the rows it outputs. A report filtered to "problems only"
@@ -307,6 +376,8 @@ The self-test module shows a working example with dummy data.
 To sign in with an app registration instead of your own account, copy `Config\settings.example.json` to
 `Config\settings.json` and fill in the tenant ID, client ID and certificate thumbprint. The certificate
 must be in your certificate store. Leave the values empty for interactive sign-in.
+App-only sessions follow the same [session rules](#sign-in-sessions-and-tenants). When a session ends,
+the toolkit signs in again with the certificate the next time it's needed.
 
 Only certificate authentication is supported. Client secrets are deliberately not supported.
 `settings.json` is git-ignored and must never be committed.
@@ -315,8 +386,9 @@ Only certificate authentication is supported. Client secrets are deliberately no
 
 ### Checking a download
 
-Every release ZIP comes with a `M365AdminToolkit-<version>.SHA256SUMS.txt` file. Before you install, check
-that the ZIP is the one that was published:
+`Get-M365AdminToolkit.ps1` does all of the checks below for you. To check a download by hand instead: every
+release ZIP comes with a `M365AdminToolkit-<version>.SHA256SUMS.txt` file. Before you install, check that the
+ZIP is the one that was published:
 
 ```powershell
 (Get-FileHash .\M365AdminToolkit-1.0.0.zip -Algorithm SHA256).Hash   # must match SHA256SUMS.txt (case doesn't matter)
@@ -349,10 +421,24 @@ Get-AuthenticodeSignature .\M365AdminToolkit\Start-Toolkit.ps1 | Format-List Sta
    The script packages exactly the tagged commit. Local changes, tests and git-ignored (private) modules are
    never included. It signs the scripts with a timestamp, so the signatures stay valid after the certificate
    expires. Then it zips the package and writes the SHA-256 of the final ZIP, so the checksum covers the signed
-   files. It never overwrites a version that has already been built.
+   files. It never overwrites a version that has already been built. When signing, it also writes a signed
+   file catalog (`M365AdminToolkit.cat`) that covers the files a signature can't (XAML, JSON). It also puts a
+   copy of the signed `Get-M365AdminToolkit.ps1` next to the ZIP.
 
-3. Create a GitHub release for the tag and upload both files from `Release\`. Publish the checksum on the
-   release page too.
+3. Publish it with the GitHub CLI (`gh auth login` first). This creates the release for the pushed tag as a
+   draft, uploads the ZIP, the checksum file and `Get-M365AdminToolkit.ps1`, then publishes it. It refuses an
+   existing release, a ZIP that no longer matches its checksum and an unsigned build:
+
+   ```powershell
+   .\Tools\Publish-ToolkitRelease.ps1 -Version 1.0.0 -WhatIf   # check first
+   .\Tools\Publish-ToolkitRelease.ps1 -Version 1.0.0
+   ```
+
+   Turn on **release immutability** once for the repository (*Settings > General > Releases*), so the tag
+   and the assets of a published release can't be changed or swapped later.
+
+`Get-M365AdminToolkit.ps1` trusts only the certificate that signed it, so every release must be signed with
+the same certificate. If you change certificates, users need the new `Get-M365AdminToolkit.ps1` once.
 
 You need a code-signing certificate to sign. Use your organisation's internal PKI for internal use, or a
 public CA or Azure Trusted Signing for public releases. Don't use a self-signed certificate: other PCs won't
@@ -397,7 +483,7 @@ directly.
 | Problem | Fix |
 |---|---|
 | *Scripts are blocked* / *not digitally signed* | Run `Unblock-File` on the folder (see [Installation](#installation)) |
-| Graph and Exchange together fail with an assembly or MSAL error | Known conflict between the two modules in Windows PowerShell 5.1. Connect to Exchange first, or run under PowerShell 7. Also check *Installed modules* for Graph version mismatches |
+| Graph and Exchange together fail with an assembly or MSAL error | Known conflict between the two modules in Windows PowerShell 5.1. Connect to Exchange first, or run under PowerShell 7. Also check *Settings > Installed PowerShell modules* for Graph version mismatches |
 | A module shows in red | Select it to see the problems, or run `.\Tools\Test-ToolkitModules.ps1` |
 | A run finishes with 0 results and an error | Check the *Log* tab. The error is from the module script |
 | Strange characters in output or errors | Save the script as ASCII or UTF-8 with BOM |

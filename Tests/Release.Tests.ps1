@@ -30,6 +30,9 @@ else {
         $private = @($modules | Where-Object { $_ -notin '_Template', 'Demo.SelfTest' })
         Check 'Only the shared sample modules ship' (-not $private.Count -and $modules -contains '_Template') "modules: $($modules -join ', ')"
         Check 'Unsigned build signs nothing' ($release.SignedFiles -eq 0) ''
+        git -C $Root cat-file -e 'HEAD:Get-M365AdminToolkit.ps1' 2>$null
+        if ($LASTEXITCODE) { Check 'Download script ships next to the ZIP' $true 'skipped: not committed yet' }
+        else { Check 'Download script ships next to the ZIP' ($release.Bootstrap -and (Test-Path $release.Bootstrap) -and $entries -contains 'M365AdminToolkit/Get-M365AdminToolkit.ps1') "$($release.Bootstrap)" }
 
         $threw = $false
         try { Build @{ Version = '0.0.1-test'; Ref = 'HEAD'; OutputPath = $out } | Out-Null } catch { $threw = $true }

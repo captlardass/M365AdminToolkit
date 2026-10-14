@@ -98,6 +98,21 @@ try {
 }
 catch { Check 'Theme rendering runs without errors' $false $_.Exception.Message }
 
+# A second launch in the same PowerShell session (VS Code, ISE, a terminal): the WPF Application and its
+# dictionaries survive, the module is re-imported. The old palette must not outrank the new one.
+try {
+    $merged = [System.Windows.Application]::Current.Resources.MergedDictionaries
+    Import-Module "$Root\Core\Toolkit.Core.psm1" -Force
+    Import-TkStyle -Path "$Root\Core\Styles.xaml" -Theme Dark
+    $again = Import-TkXaml -Path "$Root\Core\MainWindow.xaml"
+    Set-TkTheme -Theme Light
+    $palettes = @($merged | Where-Object { $_.Contains('Tk.WindowBackground') }).Count
+    $styles = @($merged | Where-Object { $_.Contains('Card') }).Count
+    Check 'Second launch in the same session: one palette and one style set, no stacking' ($palettes -eq 1 -and $styles -eq 1) "palettes=$palettes styles=$styles"
+    Check 'Second launch in the same session: the theme still switches the whole window' ([string]$again.Window.Background -eq '#FFF3F4F6') ([string]$again.Window.Background)
+}
+catch { Check 'Second launch in the same session runs without errors' $false $_.Exception.Message }
+
 $results | Format-Table -AutoSize -Wrap | Out-String -Width 200
 "{0} passed, {1} failed" -f @($results | Where-Object Result -eq 'PASS').Count, @($results | Where-Object Result -eq 'FAIL').Count
 $results.ToArray() | Where-Object Result -eq 'FAIL' | ForEach-Object { $global:TkTestFailures++ }

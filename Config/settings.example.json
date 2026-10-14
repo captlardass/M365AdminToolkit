@@ -9,5 +9,10 @@
     "Organization": "",
     "AppId": "",
     "CertificateThumbprint": ""
+  },
+  "Session": {
+    "_comment": "Sign-ins also always end at midnight, when the PC sleeps and when the toolkit closes. MaxAgeHours: 1-24, IdleMinutes: 1-1440.",
+    "MaxAgeHours": 8,
+    "IdleMinutes": 60
   }
 }

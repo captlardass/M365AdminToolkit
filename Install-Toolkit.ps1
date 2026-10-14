@@ -13,7 +13,11 @@
       - Config\settings.json and Logs are never touched.
 
 .PARAMETER Destination
-    Install folder. Defaults to %LOCALAPPDATA%\Programs\M365AdminToolkit.
+    Install folder. Defaults to %LOCALAPPDATA%\Programs\M365AdminToolkit. With -ShowSummary and no
+    -Destination, a folder picker opens.
+    The folder must be private to you: system folders, network paths and folders that other users can
+    write to are refused, because anyone who can change the files could run code as you. A new folder
+    is created with access for you, SYSTEM and Administrators only.
 
 .PARAMETER DesktopShortcut
     Also put a shortcut on the desktop (the Start menu shortcut is always created).
@@ -54,8 +58,31 @@ $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M365A
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 # What belongs to the program: replaced on upgrade, removed on uninstall. Everything else is user data.
 $programItems = 'Core', 'Tools', 'Start-Toolkit.ps1', 'Start-Toolkit.cmd', 'Install-Toolkit.ps1', 'Install-Toolkit.cmd',
-    'README.md', 'VERSION', 'Config\settings.example.json'
-if (-not $Destination) { $Destination = Join-Path $env:LOCALAPPDATA 'Programs\M365AdminToolkit' }
+    'Get-M365AdminToolkit.ps1', 'README.md', 'VERSION', 'Config\settings.example.json'
+$defaultDestination = Join-Path $env:LOCALAPPDATA 'Programs\M365AdminToolkit'
+
+function Select-ToolkitFolder([string] $Default) {
+    <# Folder picker for interactive installs. Returns $null when cancelled. #>
+    Add-Type -AssemblyName System.Windows.Forms
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    try {
+        $dialog.Description = "Choose where to install $appName. A M365AdminToolkit folder is created inside the folder you pick."
+        $dialog.SelectedPath = Split-Path $Default -Parent
+        $dialog.ShowNewFolderButton = $true
+        if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+        $picked = $dialog.SelectedPath
+    }
+    finally { $dialog.Dispose() }
+    # Picking an existing install (or a folder already named for it) upgrades it in place.
+    if ((Split-Path $picked -Leaf) -eq 'M365AdminToolkit' -or (Test-Path -LiteralPath (Join-Path $picked 'Start-Toolkit.ps1'))) { $picked }
+    else { Join-Path $picked 'M365AdminToolkit' }
+}
+
+if (-not $Destination -and -not $Uninstall -and $ShowSummary) {
+    $Destination = Select-ToolkitFolder $defaultDestination
+    if (-not $Destination) { Write-Host 'Setup cancelled.'; return }
+}
+if (-not $Destination) { $Destination = $defaultDestination }
 $Destination = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($Destination).TrimEnd('\')
 $shortcuts = @{
     StartMenu = Join-Path ([Environment]::GetFolderPath('Programs')) "$appName.lnk"
@@ -110,19 +137,105 @@ function Assert-NotWorkingCopy([string] $Folder) {
     }
 }
 
+# Accounts that may change the install folder: you, SYSTEM, Administrators, and the CREATOR OWNER /
+# OWNER RIGHTS / TrustedInstaller placeholders. Anyone else with write access could plant code you run.
+$trustedSids = @(
+    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-0', 'S-1-3-4',
+    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+)
+# WriteData, AppendData, DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership, GENERIC_WRITE, GENERIC_ALL
+$writeMask = 0x2 -bor 0x4 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+# On the folders above it, only what lets someone delete, rename or re-permission the install folder counts.
+$replaceMask = 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000
+
+function Get-OtherWriter([string] $Path, [long] $Mask, [switch] $IncludeInheritOnly) {
+    <# Who besides the trusted accounts holds any of $Mask on $Path (or owns it). Unreadable = refuse. #>
+    try { $acl = Get-Acl -LiteralPath $Path }
+    catch { return "(could not read the permissions: $($_.Exception.Message))" }
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin $trustedSids) { "owner $(Resolve-SidName $owner)" }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -in $trustedSids) { continue }
+        if (-not $IncludeInheritOnly -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
+        if ([long]$rule.FileSystemRights -band $Mask) { "$(Resolve-SidName $rule.IdentityReference.Value) ($($rule.FileSystemRights))" }
+    }
+}
+
+function Resolve-SidName([string] $Sid) {
+    try { (New-Object Security.Principal.SecurityIdentifier $Sid).Translate([Security.Principal.NTAccount]).Value } catch { $Sid }
+}
+
+function Assert-SafeDestination([string] $Folder) {
+    <# Refuses folders where the toolkit would be shared, system-owned or changeable by other users. Fails closed. #>
+    if ($Folder.StartsWith('\\')) { throw "Network paths can't be used: $Folder. Choose a folder on this PC." }
+    $root = [IO.Path]::GetPathRoot($Folder)
+    if (-not $root -or $Folder.TrimEnd('\') -eq $root.TrimEnd('\')) { throw "Choose a folder, not the root of a drive: $Folder" }
+    $drive = New-Object IO.DriveInfo $root
+    if ($drive.DriveType -eq 'Network') { throw "$root is a network drive. Choose a folder on this PC." }
+    $system = 'Windows', 'ProgramFiles', 'ProgramFilesX86', 'CommonApplicationData' |
+        ForEach-Object { [Environment]::GetFolderPath($_) } | Where-Object { $_ }
+    foreach ($dir in $system) {
+        if ($Folder -eq $dir -or $Folder.StartsWith("$($dir.TrimEnd('\'))\", [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$dir is a machine-wide folder. The toolkit installs per user: choose a folder in your own profile, e.g. $defaultDestination."
+        }
+    }
+    if ($drive.DriveType -eq 'Removable' -and $Portable) {
+        Write-Warning "$root is a removable drive: anyone who gets hold of it can change the scripts. Only run a copy you trust."
+        return
+    }
+
+    $problems = @()
+    if (Test-Path -LiteralPath $Folder) {
+        $problems += @(Get-OtherWriter -Path $Folder -Mask $writeMask -IncludeInheritOnly | ForEach-Object { "$Folder`: $_" })
+    }
+    $parent = Split-Path $Folder -Parent
+    while ($parent) {
+        if (Test-Path -LiteralPath $parent) { $problems += @(Get-OtherWriter -Path $parent -Mask $replaceMask | ForEach-Object { "$parent`: $_" }) }
+        $parent = Split-Path $parent -Parent
+    }
+    if ($problems.Count) {
+        throw ("Other accounts can change $Folder or a folder above it, so they could change the toolkit's scripts and run code as you:`n  " +
+            ($problems -join "`n  ") + "`nChoose a folder only you can write to, e.g. $defaultDestination.")
+    }
+}
+
+function New-PrivateFolder([string] $Folder) {
+    <# Creates the install folder - and any missing folder above it - with access for you, SYSTEM and
+       Administrators only (nothing inherited): a new D:\Tools would otherwise inherit "Users can modify". #>
+    $missing = @()
+    for ($dir = $Folder; $dir -and -not (Test-Path -LiteralPath $dir); $dir = Split-Path $dir -Parent) { $missing = , $dir + $missing }
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in $trustedSids[0..2]) {
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule (
+            (New-Object Security.Principal.SecurityIdentifier $sid), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
+        $acl.AddAccessRule($rule)
+    }
+    foreach ($dir in $missing) {
+        [void](New-Item -ItemType Directory -Path $dir)
+        Set-Acl -LiteralPath $dir -AclObject $acl
+    }
+}
+
 function Install-Toolkit {
     $source = $PSScriptRoot.TrimEnd('\')
     if (-not (Test-Path -LiteralPath (Join-Path $source 'Core\Toolkit.Core.psm1'))) { throw "No toolkit files found next to the installer in $source." }
     if ($Destination -eq $source) { throw "This copy already runs from $Destination. Run the installer from the downloaded or cloned folder instead." }
     if ($Destination.StartsWith("$source\", [StringComparison]::OrdinalIgnoreCase)) { throw 'The install folder cannot be inside the folder you install from.' }
     Assert-NotWorkingCopy $Destination
+    Assert-SafeDestination $Destination
     if ((New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole('Administrator')) {
         Write-Warning 'Running as administrator: the toolkit is installed for the account running this window. Run it without elevation to install it for yourself.'
     }
 
     $upgrade = Test-Path -LiteralPath (Join-Path $Destination 'Start-Toolkit.ps1')
     Write-Host "$(if ($upgrade) { 'Upgrading' } else { 'Installing' }) $appName in $Destination ..."
-    if (-not (Test-Path -LiteralPath $Destination)) { [void](New-Item -ItemType Directory -Path $Destination -Force) }
+    if (-not (Test-Path -LiteralPath $Destination)) {
+        if ($Portable -and (New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($Destination))).DriveType -eq 'Removable') {
+            [void](New-Item -ItemType Directory -Path $Destination -Force)    # removable drives often have no permissions to set
+        }
+        else { New-PrivateFolder $Destination }
+    }
 
     foreach ($item in $programItems) {
         $from = Join-Path $source $item

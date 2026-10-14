@@ -26,6 +26,197 @@ function Get-TkSetting {
     if ($global:TkSettings -and $global:TkSettings.PSObject.Properties[$Section]) { $global:TkSettings.$Section }
 }
 
+#region Sign-in session policy
+<#
+    The toolkit works in customer tenants, so a sign-in is trusted only for the toolkit launch
+    that made it, and only until the first of:
+      * midnight (the calendar day changes),
+      * Session.MaxAgeHours after sign-in (settings.json, default 8),
+      * Session.IdleMinutes without a module run or connect (default 60),
+      * the PC sleeping or hibernating,
+      * the system clock going backwards.
+    Nothing outlives a launch: Graph signs in with -ContextScope Process (in-memory token cache),
+    and WAM - the Windows sign-in broker, which silently hands back an account's tokens even after
+    a restart - is bypassed, so the browser asks which account to use. A connection this launch
+    did not make (Graph and Exchange keep theirs in process-wide state) is ended before use.
+
+    Every session is pinned to one tenant. A sign-in to a different tenant, or a check that cannot
+    tell, signs everything out. All checks fail closed: when in doubt, sign out.
+#>
+
+$global:TkSession = $null           # set by Register-TkSignIn, cleared by Disconnect-TkAll
+$global:TkSignOutReason = ''        # why the toolkit last ended a session; read once by Get-TkConnectionStatus
+
+if (-not ('TkNative.Clock' -as [type])) {
+    # Without it Get-TkAwakeTime returns nothing and every session check fails closed.
+    try { Add-Type -Namespace TkNative -Name Clock -ErrorAction Stop -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool QueryUnbiasedInterruptTime(out ulong UnbiasedTime);' }
+    catch { }
+}
+
+function Get-TkAwakeTime {
+    <# 100 ns ticks the PC has been awake since boot (sleep and hibernation excluded), or nothing if unknown. #>
+    if (-not ('TkNative.Clock' -as [type])) { return }
+    $ticks = [uint64]0
+    if ([TkNative.Clock]::QueryUnbiasedInterruptTime([ref]$ticks)) { [long]$ticks }
+}
+
+function Get-TkSessionPolicy {
+    <# Session limits from settings.json; missing or out-of-range values fall back to the defaults. #>
+    $cfg = Get-TkSetting 'Session'
+    $maxAge = 8
+    $idle = 60
+    if ($cfg) {
+        $v = $cfg.MaxAgeHours -as [double]
+        if ($v -gt 0 -and $v -le 24) { $maxAge = $v }
+        $v = $cfg.IdleMinutes -as [double]
+        if ($v -gt 0 -and $v -le 1440) { $idle = $v }
+    }
+    [pscustomobject]@{ MaxAgeHours = $maxAge; IdleMinutes = $idle }
+}
+
+function New-TkSession {
+    param([Parameter(Mandatory)] [string] $TenantId, [datetime] $Now = (Get-Date), $AwakeTime = (Get-TkAwakeTime))
+    [pscustomobject]@{ TenantId = $TenantId; TenantName = ''; SignedIn = $Now; LastUsed = $Now; AwakeAtSignIn = $AwakeTime }
+}
+
+function Get-TkSessionExpiry {
+    <#
+    .SYNOPSIS
+        Why a session may no longer be used, or nothing while it is still valid.
+        The clock readings are parameters so tests can move time.
+    #>
+    param($Session, [datetime] $Now = (Get-Date), $AwakeTime = (Get-TkAwakeTime), $Policy = (Get-TkSessionPolicy))
+
+    if (-not $Session) { return 'the connection was not made by this toolkit session' }
+    if ($Now -lt $Session.SignedIn -or $Now -lt $Session.LastUsed) { return 'the system clock went backwards' }
+    if ($Now.Date -ne $Session.SignedIn.Date) { return 'a new day has started (sessions end at midnight)' }
+    # UTC for durations, so a daylight-saving change is not taken for elapsed time.
+    $age = $Now.ToUniversalTime() - $Session.SignedIn.ToUniversalTime()
+    if ($age.TotalHours -ge $Policy.MaxAgeHours) { return "it is more than $($Policy.MaxAgeHours) hour(s) since sign-in" }
+    if (($Now.ToUniversalTime() - $Session.LastUsed.ToUniversalTime()).TotalMinutes -ge $Policy.IdleMinutes) {
+        return "it was idle for more than $($Policy.IdleMinutes) minute(s)"
+    }
+    if ($null -eq $AwakeTime -or $null -eq $Session.AwakeAtSignIn) { return 'sleep or hibernation since sign-in cannot be ruled out' }
+    # Wall-clock time minus awake time = time asleep. Allow drift between the two clocks; a real sleep is longer.
+    $asleep = $age - [TimeSpan]::FromTicks([long]$AwakeTime - [long]$Session.AwakeAtSignIn)
+    if ($asleep.TotalSeconds -gt 120) { return 'the PC has been asleep or hibernated since sign-in' }
+}
+
+function Get-TkSessionEnd {
+    <# When the session ends at the latest, if nothing else (idle, sleep) ends it sooner. #>
+    param([Parameter(Mandatory)] $Session, $Policy = (Get-TkSessionPolicy))
+    $midnight = $Session.SignedIn.Date.AddDays(1)
+    $maxAge = $Session.SignedIn.AddHours($Policy.MaxAgeHours)
+    if ($maxAge -lt $midnight) { $maxAge } else { $midnight }
+}
+
+function Test-TkGraphConnected {
+    [bool]((Get-Module Microsoft.Graph.Authentication) -and (Get-MgContext))
+}
+
+function Test-TkExchangeConnected {
+    if (-not (Get-Module ExchangeOnlineManagement)) { return $false }
+    $sessions = @(Get-ConnectionInformation -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Connected' })
+    $sessions.Count -gt 0
+}
+
+function Get-TkTenantId {
+    <# The tenant ID(s) a service is signed in to. Exchange can hold several connections, so this may return more than one. #>
+    param([Parameter(Mandatory)] [ValidateSet('Graph', 'Exchange')] [string] $Service)
+    if ($Service -eq 'Graph') {
+        if (Test-TkGraphConnected) { [string](Get-MgContext).TenantId }
+        return
+    }
+    if (Test-TkExchangeConnected) {
+        Get-ConnectionInformation -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Connected' } |
+            ForEach-Object { [string]$_.TenantID } | Sort-Object -Unique
+    }
+}
+
+function Get-TkTenantName {
+    <#
+        The tenant's display name, asked of the tenant itself. Never derived from the account's domain:
+        with delegated admin (GDAP) the account belongs to another tenant than the one being managed.
+    #>
+    if (Test-TkGraphConnected) {
+        try {
+            $org = (Invoke-MgGraphRequest -Method GET -Uri 'v1.0/organization?$select=id,displayName' -OutputType PSObject -ErrorAction Stop).value | Select-Object -First 1
+            if ($org.displayName) { return [string]$org.displayName }
+        }
+        catch { Write-Verbose "Tenant name from Graph: $($_.Exception.Message)" }
+    }
+    if ((Test-TkExchangeConnected) -and (Get-Command Get-OrganizationConfig -ErrorAction SilentlyContinue)) {
+        try {
+            $name = [string](Get-OrganizationConfig -ErrorAction Stop).DisplayName
+            if ($name) { return $name }
+        }
+        catch { Write-Verbose "Tenant name from Exchange: $($_.Exception.Message)" }
+    }
+    ''
+}
+
+function Register-TkSignIn {
+    <#
+    .SYNOPSIS
+        Called after every connect: starts the session on the first sign-in and pins it to that tenant.
+        A sign-in to another tenant - or one whose tenant cannot be read - signs everything out.
+    #>
+    param([Parameter(Mandatory)] [ValidateSet('Graph', 'Exchange')] [string] $Service)
+
+    $ids = @(Get-TkTenantId -Service $Service)
+    $pinned = if ($global:TkSession) { $global:TkSession.TenantId } else { '' }
+    $problem = if ($ids.Count -ne 1 -or -not ($ids[0] -as [guid])) { "it could not be confirmed which tenant $Service is signed in to" }
+        elseif ($pinned -and $ids[0] -ne $pinned) { "$Service signed in to tenant $($ids[0]), but this session is for tenant $pinned" }
+    if ($problem) {
+        Disconnect-TkAll
+        $global:TkSignOutReason = $problem
+        throw "Signed out of Microsoft 365 because $problem. Sign in again with an account for the tenant you mean."
+    }
+
+    if (-not $global:TkSession) { $global:TkSession = New-TkSession -TenantId $ids[0] }
+    $global:TkSession.LastUsed = Get-Date
+    if (-not $global:TkSession.TenantName) {
+        $global:TkSession.TenantName = Get-TkTenantName
+        $shownName = if ($global:TkSession.TenantName) { $global:TkSession.TenantName } else { '(name not available)' }
+        Write-Information "Signed in to tenant: $shownName - $($ids[0])"
+    }
+}
+
+function Confirm-TkSession {
+    <# Signs out when the current connection may no longer be trusted (see the region comment). #>
+    if (-not ((Test-TkGraphConnected) -or (Test-TkExchangeConnected))) {
+        $global:TkSession = $null
+        return
+    }
+    $reason = Get-TkSessionExpiry -Session $global:TkSession
+    if (-not $reason) {
+        # A script that connected on its own may have moved a service to another tenant.
+        $ids = @(@(Get-TkTenantId -Service Graph) + @(Get-TkTenantId -Service Exchange) | Where-Object { $_ })
+        if (@($ids | Where-Object { $_ -ne $global:TkSession.TenantId }).Count) { $reason = 'a connection is signed in to another tenant than this session' }
+    }
+    if (-not $reason) { return }
+    Write-Warning "Signed out of Microsoft 365 because $reason. Sign in again and check the tenant shown at the top."
+    Disconnect-TkAll
+    $global:TkSignOutReason = $reason
+}
+
+function Clear-TkInheritedSignIn {
+    <#
+        Graph and Exchange keep their connection in process-wide state. A toolkit relaunched in the same
+        PowerShell process - or started from a prompt that ran Connect-MgGraph - would otherwise inherit
+        that sign-in. Runs once when the worker starts; Confirm-TkSession is the backstop.
+    #>
+    $loaded = @([AppDomain]::CurrentDomain.GetAssemblies() | ForEach-Object { $_.GetName().Name })
+    try {
+        if ($loaded -contains 'Microsoft.Graph.Authentication') { Import-Module Microsoft.Graph.Authentication -ErrorAction Stop }
+        if ($loaded -like 'Microsoft.Exchange.Management.ExoPowershell*') { Import-Module ExchangeOnlineManagement -ErrorAction Stop }
+        if ((Test-TkGraphConnected) -or (Test-TkExchangeConnected)) { Disconnect-TkAll }
+    }
+    catch { }     # must not fail worker start-up; Confirm-TkSession signs out before any use
+}
+
+#endregion
+
 function Connect-TkGraph {
     <#
     .SYNOPSIS
@@ -37,35 +228,38 @@ function Connect-TkGraph {
 
     Assert-TkInstalled 'Microsoft.Graph.Authentication'
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+    Confirm-TkSession
 
     $cfg = Get-TkSetting 'Graph'
     $context = Get-MgContext
 
     if ($cfg -and $cfg.ClientId -and $cfg.CertificateThumbprint) {
         # App-only: permissions come from the app registration, not from requested scopes.
-        if ($context -and $context.AuthType -eq 'AppOnly') { return }
-        Write-Information 'Connecting to Microsoft Graph (app-only, certificate)...'
-        Connect-MgGraph -TenantId $cfg.TenantId -ClientId $cfg.ClientId -CertificateThumbprint $cfg.CertificateThumbprint -NoWelcome -ErrorAction Stop
+        if (-not ($context -and $context.AuthType -eq 'AppOnly')) {
+            Write-Information 'Connecting to Microsoft Graph (app-only, certificate)...'
+            Connect-MgGraph -TenantId $cfg.TenantId -ClientId $cfg.ClientId -CertificateThumbprint $cfg.CertificateThumbprint -ContextScope Process -NoWelcome -ErrorAction Stop
+        }
+        Register-TkSignIn -Service Graph
         return
     }
 
     $missing = @($Scopes | Where-Object { -not $context -or $context.Scopes -notcontains $_ })
-    if ($context -and $missing.Count -eq 0) { return }
+    if (-not $context -or $missing.Count) {
+        # Reconnect with the union of what we already had and what this module needs.
+        # User.Read lets the toolkit read the tenant's name (GET /organization).
+        $allScopes = @(@($Scopes) + @(if ($context) { $context.Scopes }) + 'User.Read' | Where-Object { $_ } | Sort-Object -Unique)
+        $connect = @{ Scopes = $allScopes; ContextScope = 'Process'; NoWelcome = $true; ErrorAction = 'Stop' }
+        if ($cfg -and $cfg.TenantId) { $connect.TenantId = $cfg.TenantId }
 
-    # Reconnect with the union of what we already had and what this module needs.
-    $allScopes = @(@($Scopes) + @(if ($context) { $context.Scopes }) | Where-Object { $_ } | Sort-Object -Unique)
-    $connect = @{ NoWelcome = $true; ErrorAction = 'Stop' }
-    if ($allScopes.Count) { $connect.Scopes = $allScopes }
-    if ($cfg -and $cfg.TenantId) { $connect.TenantId = $cfg.TenantId }
-
-    Write-Information ("Connecting to Microsoft Graph (scopes: {0})..." -f $(if ($allScopes) { $allScopes -join ', ' } else { 'default' }))
-    Connect-MgGraph @connect
-}
-
-function Test-TkExchangeConnected {
-    if (-not (Get-Module ExchangeOnlineManagement)) { return $false }
-    $sessions = @(Get-ConnectionInformation -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Connected' })
-    $sessions.Count -gt 0
+        # Bypass WAM for this sign-in so the browser asks which account to use, then put the user's own setting back.
+        $wamOption = [bool](Get-Command Set-MgGraphOption -ParameterName DisableLoginByWAM -ErrorAction SilentlyContinue)
+        $restoreWam = $wamOption -and -not (Get-MgGraphOption).DisableLoginByWAM
+        if ($restoreWam) { Set-MgGraphOption -DisableLoginByWAM $true | Out-Null }
+        Write-Information ("Connecting to Microsoft Graph (scopes: {0})..." -f ($allScopes -join ', '))
+        try { Connect-MgGraph @connect }
+        finally { if ($restoreWam) { Set-MgGraphOption -DisableLoginByWAM $false | Out-Null } }
+    }
+    Register-TkSignIn -Service Graph
 }
 
 function Connect-TkExchange {
@@ -76,25 +270,32 @@ function Connect-TkExchange {
     [CmdletBinding()]
     param()
 
-    if (Test-TkExchangeConnected) { return }
-    Assert-TkInstalled 'ExchangeOnlineManagement'
-    Import-Module ExchangeOnlineManagement -ErrorAction Stop
+    Confirm-TkSession
+    if (-not (Test-TkExchangeConnected)) {
+        Assert-TkInstalled 'ExchangeOnlineManagement'
+        Import-Module ExchangeOnlineManagement -ErrorAction Stop
 
-    $cfg = Get-TkSetting 'ExchangeOnline'
-    $connect = @{ ShowBanner = $false; ErrorAction = 'Stop' }
-    if ($cfg -and $cfg.AppId -and $cfg.CertificateThumbprint -and $cfg.Organization) {
-        $connect.AppId = $cfg.AppId
-        $connect.CertificateThumbprint = $cfg.CertificateThumbprint
-        $connect.Organization = $cfg.Organization
-        Write-Information 'Connecting to Exchange Online (app-only, certificate)...'
+        $cfg = Get-TkSetting 'ExchangeOnline'
+        $connect = @{ ShowBanner = $false; ErrorAction = 'Stop' }
+        if ($cfg -and $cfg.AppId -and $cfg.CertificateThumbprint -and $cfg.Organization) {
+            $connect.AppId = $cfg.AppId
+            $connect.CertificateThumbprint = $cfg.CertificateThumbprint
+            $connect.Organization = $cfg.Organization
+            Write-Information 'Connecting to Exchange Online (app-only, certificate)...'
+        }
+        else {
+            # Like Graph: no silent sign-in through the Windows broker (ExchangeOnlineManagement 3.7+).
+            if ((Get-Command Connect-ExchangeOnline).Parameters.ContainsKey('DisableWAM')) { $connect.DisableWAM = $true }
+            Write-Information 'Connecting to Exchange Online...'
+        }
+        Connect-ExchangeOnline @connect
     }
-    else {
-        Write-Information 'Connecting to Exchange Online...'
-    }
-    Connect-ExchangeOnline @connect
+    Register-TkSignIn -Service Exchange
 }
 
 function Get-TkConnectionStatus {
+    Confirm-TkSession
+
     $graph = $null
     if (Get-Module Microsoft.Graph.Authentication) { $graph = Get-MgContext }
 
@@ -104,22 +305,38 @@ function Get-TkConnectionStatus {
             Where-Object { $_.State -eq 'Connected' } | Select-Object -First 1
     }
 
+    $session = $global:TkSession
+    $policy = Get-TkSessionPolicy
+    $signOutReason = $global:TkSignOutReason
+    $global:TkSignOutReason = ''
+
     [pscustomobject]@{
         GraphConnected    = [bool]$graph
         GraphAccount      = if (-not $graph) { '' } elseif ($graph.Account) { $graph.Account } else { "app $($graph.AppName)" }
         ExchangeConnected = [bool]$exchange
         ExchangeAccount   = if ($exchange) { [string]$exchange.UserPrincipalName } else { '' }
+        TenantId          = if ($session) { $session.TenantId } else { '' }
+        TenantName        = if ($session) { $session.TenantName } else { '' }
+        SignedIn          = if ($session) { $session.SignedIn } else { $null }
+        SessionEnd        = if ($session) { Get-TkSessionEnd -Session $session -Policy $policy } else { $null }
+        IdleMinutes       = $policy.IdleMinutes
+        SignOutReason     = $signOutReason
     }
 }
 
 function Disconnect-TkAll {
-    if ((Get-Module Microsoft.Graph.Authentication) -and (Get-MgContext)) {
+    $global:TkSession = $null
+    if (Test-TkGraphConnected) {
         Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
         Write-Information 'Disconnected from Microsoft Graph.'
     }
     if (Test-TkExchangeConnected) {
         Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
         Write-Information 'Disconnected from Exchange Online.'
+    }
+    # Fail closed: never carry on believing we are signed out when we are not.
+    if ((Test-TkGraphConnected) -or (Test-TkExchangeConnected)) {
+        throw 'Could not sign out of Microsoft 365. Close the toolkit and its PowerShell window to end the session.'
     }
 }
 
@@ -448,9 +665,16 @@ function Invoke-TkModule {
         [ValidateSet('Off', 'DryRun', 'ReadOnly')] [string] $Guard = 'Off'
     )
 
+    # Even modules that declare no connection: the script must not pick up a stale one.
+    Confirm-TkSession
     # Connect before the guard is on, so sign-in is never mistaken for a change.
     if ($Requires.GraphScopes.Count) { Connect-TkGraph -Scopes $Requires.GraphScopes }
     if ($Requires.ExchangeOnline) { Connect-TkExchange }
+    if ($global:TkSession) {
+        $global:TkSession.LastUsed = Get-Date
+        $shownName = if ($global:TkSession.TenantName) { $global:TkSession.TenantName } else { '(name not available)' }
+        Write-Information "Tenant: $shownName - $($global:TkSession.TenantId)"
+    }
 
     if ($Guard -eq 'Off') {
         & $EntryPath @Parameters
@@ -464,3 +688,5 @@ function Invoke-TkModule {
     try { & $EntryPath @Parameters }
     finally { Disable-TkGuard }      # also runs on errors and on Cancel (pipeline stop)
 }
+
+Clear-TkInheritedSignIn

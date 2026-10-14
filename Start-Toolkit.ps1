@@ -37,6 +37,14 @@ $settings = if (Test-Path -LiteralPath $settingsPath) { Get-Content -LiteralPath
 $preferences = Get-TkPreference
 Import-TkStyle -Path (Join-Path $PSScriptRoot 'Core\Styles.xaml') -Theme (Resolve-TkTheme $preferences.Theme)
 $ui = Import-TkXaml -Path (Join-Path $PSScriptRoot 'Core\MainWindow.xaml')
+# Release builds carry a VERSION file (Tools\New-ToolkitRelease.ps1); a git clone doesn't.
+$versionFile = Join-Path $PSScriptRoot 'VERSION'
+$toolkitVersion = if (Test-Path -LiteralPath $versionFile) { (Get-Content -LiteralPath $versionFile -TotalCount 1).Trim() } else { 'dev' }
+$ui.VersionText.Text = $toolkitVersion
+$ui.VersionText.ToolTip = if ($toolkitVersion -eq 'dev') { 'Development copy (no VERSION file): not installed from a release' } else { "Toolkit version $toolkitVersion" }
+$ui.Window.Title = "$($ui.Window.Title) $toolkitVersion"
+$baseTitle = $ui.Window.Title      # Show-Tenant appends the tenant, so it shows in the taskbar too
+$ui.MainTabs.SelectedItem = $ui.ModulesTab     # always open on the Modules page
 
 # Leading comma: without it PowerShell would unroll the (empty) set into $null on return.
 function New-TkStringSet { , [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) }
@@ -60,10 +68,11 @@ $State = @{
     ReadinessView = $preferences.ReadinessView   # Percent (with counts) or Rating (Pass/Warn/Fail)
     ReadinessByModule = @{}               # module Id -> last run's readiness (Get-TkReadiness + Finished); this session only
     Viewer        = $null                 # the open script viewer, if any
-    Inventory     = @()                   # rows for the Installed modules tab
+    Inventory     = @()                   # rows for Settings > Installed PowerShell modules
     InventoryJob  = $null                 # scan running in its own runspace, apart from the worker
     InventoryChecked = $false             # whether the last scan compared with the PowerShell Gallery
     Elevated      = Test-TkElevated        # AllUsers modules can only be updated in place as administrator
+    SignOutNotice = ''                    # why the worker last ended the sign-in; shown in the header until the next one
 }
 foreach ($id in $preferences.Favorites) { [void]$State.Favorites.Add($id) }
 
@@ -128,6 +137,46 @@ function Update-ConnectionStatus {
         if (-not $status) { return }
         Set-ConnectionIndicator $ui.GraphDot $ui.GraphStatus 'Graph' $status.GraphConnected $status.GraphAccount
         Set-ConnectionIndicator $ui.ExoDot $ui.ExoStatus 'Exchange' $status.ExchangeConnected $status.ExchangeAccount
+        Show-Tenant $status
+    }
+}
+
+function Show-Tenant {
+    <# The tenant block in the header (and the window title). Fails closed: no session, no tenant shown. #>
+    param($Status)
+    $connected = ($Status.GraphConnected -or $Status.ExchangeConnected) -and $Status.TenantId
+    if ($Status.SignOutReason) {
+        $State.SignOutNotice = $Status.SignOutReason
+        $ui.StatusText.Text = "Signed out of Microsoft 365 because $($Status.SignOutReason)."
+        # The worker's warning is on screen; the file gets the reason (no tenant or account details).
+        Write-TkLogFile -Path $State.LogFile -Level 'WARN' -Message "Signed out: $($Status.SignOutReason)"
+    }
+    if ($connected) {
+        $State.SignOutNotice = ''
+        $name = if ($Status.TenantName) { $Status.TenantName } else { 'Tenant name not available' }
+        $ui.TenantName.Text = $name
+        $ui.TenantIdText.Text = "Tenant ID: $($Status.TenantId)"
+        $ui.TenantIdText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.HeaderSubtle')
+        $ui.TenantBox.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'Tk.Connected')
+        $ui.TenantBox.ToolTip = "Every module runs in this tenant.`nSigned in at {0:HH:mm}. The session ends at {1:HH:mm}, after {2} minutes without use, or when the PC sleeps - whichever comes first." -f $Status.SignedIn, $Status.SessionEnd, $Status.IdleMinutes
+        $ui.Window.Title = "$baseTitle - $name ($($Status.TenantId))"
+        [System.Windows.Automation.AutomationProperties]::SetName($ui.TenantBox, "Current tenant: $name, ID $($Status.TenantId)")
+    }
+    else {
+        $ui.TenantName.Text = 'No tenant - not signed in'
+        $ui.TenantIdText.Text = 'Tenant ID: -'
+        $ui.TenantIdText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.HeaderSubtle')
+        $ui.TenantBox.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'Tk.Disconnected')
+        $ui.TenantBox.ToolTip = 'Not signed in. The toolkit signs in when a module needs it, and asks which account to use.'
+        $ui.Window.Title = $baseTitle
+        [System.Windows.Automation.AutomationProperties]::SetName($ui.TenantBox, 'Current tenant: not signed in')
+        # Stays until the next sign-in, so coming back to the PC you can see why you were signed out.
+        if ($State.SignOutNotice) {
+            $ui.TenantIdText.Text = "Signed out: $($State.SignOutNotice)"
+            $ui.TenantIdText.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.HeaderWarning')
+            $ui.TenantBox.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'Tk.HeaderWarning')
+            $ui.TenantBox.ToolTip = "Signed out because $($State.SignOutNotice). The next module run or Connect asks you to sign in again."
+        }
     }
 }
 
@@ -659,7 +708,7 @@ function Complete-InventoryScan {
     $State.Inventory = $job.Collected.ToArray()
     $State.InventoryChecked = $job.CheckGallery
     foreach ($row in $State.Inventory | Where-Object Status -eq 'Missing') {
-        Write-UiLog 'WARN' "Required PowerShell module '$($row.Module)' is not installed - see the Installed modules tab."
+        Write-UiLog 'WARN' "Required PowerShell module '$($row.Module)' is not installed - see Settings > Installed PowerShell modules."
     }
     Update-InventoryView
 }
@@ -686,7 +735,9 @@ function Update-InventoryView {
     $ui.InventorySummary.Text = $text
     # Count only visible rows: one Graph update fixes dozens of hidden sub-module rows at once.
     $visibleIssues = @($attention | Where-Object { $showSub -or -not (Test-GraphSubModule $_) }).Count
-    $ui.InventoryTab.Header = if ($visibleIssues) { "Installed modules ($visibleIssues to fix)" } else { 'Installed modules' }
+    # Shown on the Settings tab, so it's visible from the Modules page.
+    $ui.SettingsTabHeader.Text = if ($visibleIssues) { "Settings ($visibleIssues to fix)" } else { 'Settings' }
+    [System.Windows.Automation.AutomationProperties]::SetName($ui.SettingsTab, $ui.SettingsTabHeader.Text)
     Update-InventoryButtons
 }
 
@@ -749,6 +800,12 @@ $inventoryTimer.Add_Tick({
         Write-UiLog 'ERROR' "Toolkit error while handling installed modules: $($_.Exception.Message)"
     }
 })
+
+# Session check: the worker ends a stale sign-in (midnight, idle, sleep...) before every use anyway;
+# this makes it happen - and the header show it - while the toolkit just sits open.
+$sessionTimer = New-Object System.Windows.Threading.DispatcherTimer
+$sessionTimer.Interval = [TimeSpan]::FromSeconds(60)
+$sessionTimer.Add_Tick({ if (-not $State.Job -and $State.Worker) { Update-ConnectionStatus } })
 
 $ui.RescanModulesButton.Add_Click({ Start-InventoryScan -CheckGallery:$State.InventoryChecked })
 $ui.CheckUpdatesButton.Add_Click({ Start-InventoryScan -CheckGallery })
@@ -948,6 +1005,24 @@ $ui.ExportButton.Add_Click({
     }
 })
 
+$ui.ExportLogButton.Add_Click({
+    $text = $ui.LogBox.Text
+    if (-not $text.Trim()) { Write-UiLog 'INFO' 'The log is empty - nothing to export.'; return }
+    $dialog = New-Object Microsoft.Win32.SaveFileDialog
+    $dialog.Filter = 'Text file (*.txt)|*.txt|All files (*.*)|*.*'
+    $dialog.FileName = 'M365AdminToolkit-log_{0:yyyyMMdd-HHmm}.txt' -f (Get-Date)
+    if (-not $dialog.ShowDialog($ui.Window)) { return }
+    try {
+        $header = 'M365 Admin Toolkit {0} - log exported {1:yyyy-MM-dd HH:mm:ss}' -f $toolkitVersion, (Get-Date)
+        # The on-screen log, as shown (it can name users or mailboxes, unlike the file in Logs\).
+        [System.IO.File]::WriteAllText($dialog.FileName, $header + [Environment]::NewLine + [Environment]::NewLine + $text, [System.Text.UTF8Encoding]::new($true))
+        Write-UiLog 'INFO' "Exported the log to $($dialog.FileName)"
+    }
+    catch {
+        [void][System.Windows.MessageBox]::Show("Could not export the log: $($_.Exception.Message)", 'Export log', 'OK', 'Error')
+    }
+})
+
 $ui.Window.Add_ContentRendered({ Update-ConnectionStatus; Start-InventoryScan })
 
 # Theme: set the box before hooking it up, so loading the preference doesn't save it straight back.
@@ -980,6 +1055,7 @@ $ui.Window.Add_Closing({
     }
     $timer.Stop()
     $inventoryTimer.Stop()
+    $sessionTimer.Stop()
     if ($State.Job) { Stop-TkJob -Job $State.Job }
     if ($State.InventoryJob) { Stop-TkJob -Job $State.InventoryJob }
     Write-TkLogFile -Path $State.LogFile -Level 'INFO' -Message 'Toolkit closed.'
@@ -991,7 +1067,16 @@ Write-TkLogFile -Path $State.LogFile -Level 'INFO' -Message "Toolkit started (Po
 Import-Modules
 $State.Worker = New-TkWorker -HelperScript (Join-Path $PSScriptRoot 'Core\Toolkit.Worker.ps1') -Settings $settings
 $timer.Start()
+$sessionTimer.Start()
 
 [void]$ui.Window.ShowDialog()
 
-if ($State.Worker) { $State.Worker.Dispose() }
+if ($State.Worker) {
+    # Sign out with the window: Graph and Exchange keep connections process-wide, so a relaunch from this
+    # PowerShell window would otherwise inherit them. (The next worker also clears any it finds.)
+    if ($State.Job) { [void]$State.Job.Handle.AsyncWaitHandle.WaitOne(5000) }    # let a cancelled run stop
+    if (-not (Invoke-TkWorkerCommand -Runspace $State.Worker -Script 'Disconnect-TkAll' -TimeoutSeconds 15)) {
+        Write-TkLogFile -Path $State.LogFile -Level 'WARN' -Message 'Could not confirm sign-out on close; the next launch ends any leftover session.'
+    }
+    $State.Worker.Dispose()
+}

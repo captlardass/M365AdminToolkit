@@ -15,13 +15,18 @@ try {
     $first = Run @{ Destination = $dest; Portable = $true }
     Check 'Fresh install reports Installed' ($first.Action -eq 'Installed') $first.Action
     $expected = 'Core\Toolkit.Core.psm1', 'Core\Toolkit.Worker.ps1', 'Tools\Test-ToolkitModules.ps1', 'Start-Toolkit.ps1', 'Start-Toolkit.cmd',
-        'Install-Toolkit.ps1', 'Install-Toolkit.cmd', 'Config\settings.example.json', 'Modules\_Template\module.json', 'Modules\Demo.SelfTest\module.ps1'
+        'Install-Toolkit.ps1', 'Install-Toolkit.cmd', 'Get-M365AdminToolkit.ps1', 'Config\settings.example.json', 'Modules\_Template\module.json', 'Modules\Demo.SelfTest\module.ps1'
     $missing = @($expected | Where-Object { -not (Test-Path (Join-Path $dest $_)) })
     Check 'Program files and modules are copied' (-not $missing.Count) ($missing -join ', ')
     $unwanted = @('Tests', '.git', 'CLAUDE.md', 'Logs' | Where-Object { Test-Path (Join-Path $dest $_) })
     Check 'Tests, git data and notes are not copied' (-not $unwanted.Count) ($unwanted -join ', ')
     Check 'Portable install adds no shortcuts' (-not @($first.Shortcuts).Count) ''
     Check 'Portable install leaves the uninstall entry alone' ((Get-ItemProperty -Path $uninstallKey -ErrorAction SilentlyContinue).InstallLocation -eq $registeredBefore) ''
+    $acl = Get-Acl -LiteralPath $dest
+    $mine = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+    $others = @($sids | Where-Object { $_ -notin $mine, 'S-1-5-18', 'S-1-5-32-544' })
+    Check 'New install folder is private (no inherited access, only you, SYSTEM, Administrators)' ($acl.AreAccessRulesProtected -and -not $others.Count -and $sids -contains $mine) ($others -join ', ')
 
     # User data in the installed copy, then upgrade.
     New-Item -ItemType Directory "$dest\Logs", "$dest\Modules\My.Own" -Force | Out-Null
@@ -51,6 +56,33 @@ try {
         Check 'Refuses to uninstall a git working copy' ($threw -and (Test-Path "$Root\Core\Toolkit.Core.psm1")) ''
     }
 
+    # Unsafe destinations: refused before anything is copied.
+    foreach ($case in @(
+            @{ Name = 'a machine-wide folder (Program Files)'; Path = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'M365AdminToolkit' },
+            @{ Name = 'a network path'; Path = '\\fileserver.contoso.example\share\M365AdminToolkit' },
+            @{ Name = 'the root of a drive'; Path = [IO.Path]::GetPathRoot($dest) })) {
+        $threw = $false
+        try { Run @{ Destination = $case.Path; Portable = $true } | Out-Null } catch { $threw = $true }
+        Check "Refuses $($case.Name)" ($threw -and -not (Test-Path (Join-Path $case.Path 'Start-Toolkit.ps1'))) $case.Path
+    }
+    $shared = "$dest-shared"
+    New-Item -ItemType Directory $shared | Out-Null
+    $sharedAcl = Get-Acl -LiteralPath $shared
+    $sharedAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule (
+                (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545'), 'Modify', 'ContainerInherit, ObjectInherit', 'None', 'Allow')))
+    Set-Acl -LiteralPath $shared -AclObject $sharedAcl
+    $threw = $false
+    try { Run @{ Destination = $shared; Portable = $true } | Out-Null } catch { $threw = $_.Exception.Message -like '*Other accounts can change*' }
+    Check 'Refuses a folder that other users can write to' ($threw -and -not (Test-Path "$shared\Start-Toolkit.ps1")) ''
+    $threw = $false
+    try { Run @{ Destination = "$shared\Sub"; Portable = $true } | Out-Null } catch { $threw = $true }
+    Check 'Refuses a new folder inside one that other users can change' ($threw -and -not (Test-Path "$shared\Sub")) ''
+    Remove-Item $shared -Recurse -Force
+    $nested = Run @{ Destination = "$dest-nested\Tools\M365AdminToolkit"; Portable = $true }
+    $open = @("$dest-nested", "$dest-nested\Tools" | Where-Object { -not (Get-Acl -LiteralPath $_).AreAccessRulesProtected })
+    Check 'Missing parent folders are created private too' ($nested.Action -eq 'Installed' -and -not $open.Count) ($open -join ', ')
+    Remove-Item "$dest-nested" -Recurse -Force
+
     $gone = Run @{ Destination = $dest; Uninstall = $true }
     $left = @('Core', 'Tools', 'Start-Toolkit.ps1', 'Install-Toolkit.ps1', 'Config\settings.example.json' | Where-Object { Test-Path (Join-Path $dest $_) })
     Check 'Uninstall removes the program files' (-not $left.Count) ($left -join ', ')
@@ -62,7 +94,7 @@ try {
     Check 'Uninstalling a portable copy leaves the uninstall entry alone' ((Get-ItemProperty -Path $uninstallKey -ErrorAction SilentlyContinue).InstallLocation -eq $registeredBefore) ''
 }
 catch { Check 'Installer runs without errors' $false $_.Exception.Message }
-finally { if (Test-Path $dest) { Remove-Item $dest -Recurse -Force } }
+finally { foreach ($dir in $dest, "$dest-shared", "$dest-nested") { if (Test-Path $dir) { Remove-Item $dir -Recurse -Force } } }
 
 $errors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$null, [ref]$errors)

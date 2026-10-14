@@ -15,6 +15,7 @@
     <SolidColorBrush x:Key="Tk.HeaderText" Color="#FFFFFF"/>
     <SolidColorBrush x:Key="Tk.HeaderSubtle" Color="#9CA3AF"/>
     <SolidColorBrush x:Key="Tk.HeaderStatusText" Color="#E5E7EB"/>
+    <SolidColorBrush x:Key="Tk.HeaderWarning" Color="#FBBF24"/>
     <SolidColorBrush x:Key="Tk.StatusBarBackground" Color="#E5E7EB"/>
 
     <SolidColorBrush x:Key="Tk.InputBackground" Color="#FFFFFF"/>

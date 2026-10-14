@@ -18,10 +18,23 @@
                     <Button x:Name="ConnectExoButton" Content="Connect Exchange"/>
                     <Button x:Name="DisconnectButton" Content="Disconnect all"/>
                 </StackPanel>
-                <StackPanel Orientation="Vertical" VerticalAlignment="Center">
-                    <TextBlock Text="M365 Admin Toolkit" Foreground="{DynamicResource Tk.HeaderText}" FontSize="18" FontWeight="SemiBold"/>
+                <StackPanel DockPanel.Dock="Left" Orientation="Vertical" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="M365 Admin Toolkit" Foreground="{DynamicResource Tk.HeaderText}" FontSize="18" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="VersionText" Foreground="{DynamicResource Tk.HeaderSubtle}" FontSize="12" Margin="8,0,0,2" VerticalAlignment="Bottom"/>
+                    </StackPanel>
                     <TextBlock x:Name="SubTitle" Text="Modular PowerShell tasks" Foreground="{DynamicResource Tk.HeaderSubtle}" FontSize="11"/>
                 </StackPanel>
+                <!-- The tenant every run goes to: name and ID, read from the signed-in session -->
+                <Border x:Name="TenantBox" Margin="28,0,18,0" Padding="10,2,0,2" BorderThickness="3,0,0,0" VerticalAlignment="Center"
+                        BorderBrush="{DynamicResource Tk.Disconnected}" AutomationProperties.Name="Current tenant">
+                    <StackPanel>
+                        <TextBlock x:Name="TenantName" Text="No tenant - not signed in" Foreground="{DynamicResource Tk.HeaderText}"
+                                   FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock x:Name="TenantIdText" Text="Tenant ID: -" Foreground="{DynamicResource Tk.HeaderSubtle}"
+                                   FontSize="11" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                </Border>
             </DockPanel>
         </Border>
 
@@ -50,7 +63,13 @@
             </StatusBarItem>
         </StatusBar>
 
-        <Grid Margin="10">
+        <!-- Top-level pages. Modules (the first tab) is where you work; Settings holds toolkit housekeeping. -->
+        <TabControl x:Name="MainTabs" BorderThickness="0" Margin="10,6,10,10" Padding="0">
+        <TabItem x:Name="ModulesTab" AutomationProperties.Name="Modules">
+            <TabItem.Header>
+                <TextBlock Text="Modules" FontSize="14" FontWeight="SemiBold"/>
+            </TabItem.Header>
+        <Grid Margin="0,8,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="310" MinWidth="220"/>
                 <ColumnDefinition Width="8"/>
@@ -177,9 +196,11 @@
                                     <TextBlock x:Name="ReadinessLabel" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
                                     <TextBlock x:Name="ReadinessNotEvaluated" Foreground="{DynamicResource Tk.Warning}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                                     <TextBlock x:Name="ReadinessThresholds" Foreground="{DynamicResource Tk.SubtleText}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                                    <ToggleButton x:Name="ReadinessViewButton" Content="Pass / Warn / Fail" Padding="8,2" Margin="0,12,0,0"
-                                                  HorizontalAlignment="Left" AutomationProperties.Name="Show readiness as Pass, Warn or Fail"
-                                                  ToolTip="Show the rating large in the ring instead of the percentage"/>
+                                    <!-- Off: percentage large in the ring. On: Pass / Warn / Fail large. -->
+                                    <ToggleButton x:Name="ReadinessViewButton" Style="{StaticResource Switch}" Tag="Percentage" Content="Pass / Warn / Fail"
+                                                  Margin="0,12,0,0" HorizontalAlignment="Left"
+                                                  AutomationProperties.Name="Show readiness as Pass, Warn or Fail instead of a percentage"
+                                                  ToolTip="Choose what the ring shows in large type"/>
                                     <TextBlock x:Name="ReadinessSource" Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,12,0,0"/>
                                 </StackPanel>
                             </Grid>
@@ -214,57 +235,76 @@
                                           ClipboardCopyMode="IncludeHeader" SelectionMode="Extended"/>
                             </DockPanel>
                         </TabItem>
-                        <TabItem x:Name="InventoryTab" Header="Installed modules">
+                        <TabItem x:Name="LogTab" Header="Log">
                             <DockPanel Margin="0,6,0,0">
                                 <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6" LastChildFill="False">
-                                    <Button x:Name="UpdateModulesButton" DockPanel.Dock="Right" Content="Update all" IsEnabled="False"
-                                            Style="{StaticResource Primary}" ToolTipService.ShowOnDisabled="True"
-                                            ToolTip="Click 'Check for updates' first"/>
-                                    <Button x:Name="CheckUpdatesButton" DockPanel.Dock="Right" Content="Check for updates"
-                                            ToolTip="Compare installed versions with the latest on the PowerShell Gallery (needs internet)"/>
-                                    <Button x:Name="RescanModulesButton" DockPanel.Dock="Right" Content="Rescan"
-                                            ToolTip="List the PowerShell modules installed on this PC again"/>
-                                    <CheckBox x:Name="ShowGraphSubCheck" DockPanel.Dock="Right" Content="Show Graph sub-modules"
-                                              VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                    <TextBlock x:Name="InventorySummary" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource Tk.SubtleText}"
-                                               TextWrapping="Wrap" Text="Scanning installed PowerShell modules..."/>
+                                    <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource Tk.SubtleText}"
+                                               Text="Everything shown since the toolkit started"/>
+                                    <Button x:Name="ExportLogButton" DockPanel.Dock="Right" Content="Export log..."
+                                            ToolTip="Save this log as a text file. It includes everything shown here, which can include user and mailbox names - store and share it accordingly."/>
                                 </DockPanel>
-                                <DataGrid x:Name="InventoryGrid" AutoGenerateColumns="True" IsReadOnly="True"
-                                          CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                                          ClipboardCopyMode="IncludeHeader" SelectionMode="Extended">
-                                    <!-- Rows that need attention are tinted: red = missing, amber = should be fixed. -->
-                                    <DataGrid.RowStyle>
-                                        <Style TargetType="DataGridRow">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding Status}" Value="Missing">
-                                                    <Setter Property="Background" Value="{DynamicResource Tk.RowMissing}"/>
-                                                </DataTrigger>
-                                                <DataTrigger Binding="{Binding Status}" Value="Update available">
-                                                    <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
-                                                </DataTrigger>
-                                                <DataTrigger Binding="{Binding Status}" Value="Version mismatch">
-                                                    <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
-                                                </DataTrigger>
-                                                <DataTrigger Binding="{Binding Status}" Value="Retired">
-                                                    <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
-                                                </DataTrigger>
-                                                <DataTrigger Binding="{Binding Status}" Value="Not installed">
-                                                    <Setter Property="Foreground" Value="{DynamicResource Tk.FaintText}"/>
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </DataGrid.RowStyle>
-                                </DataGrid>
+                                <TextBox x:Name="LogBox" IsReadOnly="True" FontFamily="Consolas" FontSize="12"
+                                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                         BorderThickness="0"/>
                             </DockPanel>
-                        </TabItem>
-                        <TabItem x:Name="LogTab" Header="Log">
-                            <TextBox x:Name="LogBox" IsReadOnly="True" FontFamily="Consolas" FontSize="12"
-                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                     BorderThickness="0" Margin="0,6,0,0"/>
                         </TabItem>
                     </TabControl>
                 </Border>
             </Grid>
         </Grid>
+        </TabItem>
+
+        <TabItem x:Name="SettingsTab" AutomationProperties.Name="Settings">
+            <TabItem.Header>
+                <TextBlock x:Name="SettingsTabHeader" Text="Settings" FontSize="14" FontWeight="SemiBold"/>
+            </TabItem.Header>
+            <Border x:Name="InventorySection" Style="{StaticResource Card}" Margin="0,8,0,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Installed PowerShell modules" Style="{StaticResource SectionTitle}" Margin="0,0,0,2"/>
+                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource Hint}" Margin="0,0,0,10" TextWrapping="Wrap"
+                               Text="The Microsoft 365 PowerShell modules on this PC that the toolkit and its modules use."/>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6" LastChildFill="False">
+                        <Button x:Name="UpdateModulesButton" DockPanel.Dock="Right" Content="Update all" IsEnabled="False"
+                                Style="{StaticResource Primary}" ToolTipService.ShowOnDisabled="True"
+                                ToolTip="Click 'Check for updates' first"/>
+                        <Button x:Name="CheckUpdatesButton" DockPanel.Dock="Right" Content="Check for updates"
+                                ToolTip="Compare installed versions with the latest on the PowerShell Gallery (needs internet)"/>
+                        <Button x:Name="RescanModulesButton" DockPanel.Dock="Right" Content="Rescan"
+                                ToolTip="List the PowerShell modules installed on this PC again"/>
+                        <CheckBox x:Name="ShowGraphSubCheck" DockPanel.Dock="Right" Content="Show Graph sub-modules"
+                                  VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBlock x:Name="InventorySummary" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{DynamicResource Tk.SubtleText}"
+                                   TextWrapping="Wrap" Text="Scanning installed PowerShell modules..."/>
+                    </DockPanel>
+                    <DataGrid x:Name="InventoryGrid" AutoGenerateColumns="True" IsReadOnly="True"
+                              CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                              ClipboardCopyMode="IncludeHeader" SelectionMode="Extended">
+                        <!-- Rows that need attention are tinted: red = missing, amber = should be fixed. -->
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Status}" Value="Missing">
+                                        <Setter Property="Background" Value="{DynamicResource Tk.RowMissing}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Update available">
+                                        <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Version mismatch">
+                                        <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Retired">
+                                        <Setter Property="Background" Value="{DynamicResource Tk.RowWarning}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Not installed">
+                                        <Setter Property="Foreground" Value="{DynamicResource Tk.FaintText}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+        </TabItem>
+        </TabControl>
     </DockPanel>
 </Window>

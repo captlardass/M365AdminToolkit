@@ -137,8 +137,9 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 try {
     Import-TkStyle -Path "$Root\Core\Styles.xaml"
     $ui = Import-TkXaml -Path "$Root\Core\MainWindow.xaml"
-    $missing = @('InventoryTab', 'InventoryGrid', 'InventorySummary', 'CheckUpdatesButton', 'RescanModulesButton', 'ShowGraphSubCheck', 'UpdateModulesButton' | Where-Object { -not $ui[$_] })
+    $missing = @('ModulesTab', 'SettingsTab', 'SettingsTabHeader', 'InventorySection', 'InventoryGrid', 'InventorySummary', 'CheckUpdatesButton', 'RescanModulesButton', 'ShowGraphSubCheck', 'UpdateModulesButton' | Where-Object { -not $ui[$_] })
     Check 'MainWindow.xaml loads with inventory controls' (-not $missing.Count) ($missing -join ',')
+    Check 'Modules is the first page, Settings (with the inventory) the second' ($ui.MainTabs.Items[0] -eq $ui.ModulesTab -and $ui.MainTabs.Items[1] -eq $ui.SettingsTab -and $ui.SettingsTab.Content -eq $ui.InventorySection) ''
 }
 catch { Check 'MainWindow.xaml loads with inventory controls' $false $_.Exception.Message }
 

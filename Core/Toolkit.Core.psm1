@@ -1123,6 +1123,34 @@ function Stop-TkJob {
     [void]$Job.PowerShell.BeginStop($null, $null)
 }
 
+function Invoke-TkWorkerCommand {
+    <#
+    .SYNOPSIS
+        Runs a short script in the worker and waits at most TimeoutSeconds. Returns $true when it
+        finished without error. For shutdown: never throws, never waits longer than the timeout.
+    #>
+    param(
+        [Parameter(Mandatory)] [System.Management.Automation.Runspaces.Runspace] $Runspace,
+        [Parameter(Mandatory)] [string] $Script,
+        [int] $TimeoutSeconds = 10
+    )
+    $ps = [powershell]::Create()
+    $ps.Runspace = $Runspace
+    try {
+        [void]$ps.AddScript($Script)
+        $handle = $ps.BeginInvoke()
+        if (-not $handle.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds))) {
+            [void]$ps.BeginStop($null, $null)
+            return $false       # not disposed: that would wait for the stuck pipeline
+        }
+        [void]$ps.EndInvoke($handle)
+        $ok = $ps.Streams.Error.Count -eq 0
+        $ps.Dispose()
+        $ok
+    }
+    catch { $false }     # e.g. the worker is still busy with a job that is being stopped
+}
+
 #endregion
 
 #region Installed PowerShell modules
@@ -1487,7 +1515,11 @@ function Import-TkStyle {
     }
     $script:TkThemeFolder = Join-Path (Split-Path -Path $Path -Parent) 'Themes'
     Set-TkTheme -Theme $Theme
-    [System.Windows.Application]::Current.Resources.MergedDictionaries.Add($dictionary)
+    # The WPF Application outlives this module: a second launch in the same PowerShell session finds
+    # the first launch's styles still loaded. Replace them rather than stacking another copy.
+    $merged = [System.Windows.Application]::Current.Resources.MergedDictionaries
+    foreach ($old in @($merged | Where-Object { $_.Contains('Card') })) { [void]$merged.Remove($old) }
+    $merged.Add($dictionary)
 }
 
 function Get-TkSystemTheme {
@@ -1524,9 +1556,11 @@ function Set-TkTheme {
     $merged = [System.Windows.Application]::Current.Resources.MergedDictionaries
     $path = Join-Path $script:TkThemeFolder "$Theme.xaml"
     $palette = [System.Windows.Markup.XamlReader]::Parse((Get-Content -LiteralPath $path -Raw -Encoding UTF8))
-    $index = if ($script:TkThemeDictionary) { $merged.IndexOf($script:TkThemeDictionary) } else { -1 }
-    if ($index -ge 0) { $merged[$index] = $palette } else { $merged.Insert(0, $palette) }
-    $script:TkThemeDictionary = $palette
+    # Remove every palette already loaded, not just the one this module remembers: a second launch in the
+    # same PowerShell session re-imports the module (forgetting it) while the WPF Application keeps the old
+    # palette. A leftover palette outranks the new one and freezes the colours - only keys it lacks would switch.
+    foreach ($old in @($merged | Where-Object { $_.Contains('Tk.WindowBackground') })) { [void]$merged.Remove($old) }
+    $merged.Insert(0, $palette)
     $script:TkTheme = $Theme
     foreach ($window in [System.Windows.Application]::Current.Windows) { Set-TkWindowTheme -Window $window }
 }
@@ -1601,7 +1635,7 @@ function Write-TkLogFile {
 #endregion
 
 Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm, Get-TkParameterValue,
-    New-TkWorker, Start-TkJob, Receive-TkJob, Complete-TkJob, Stop-TkJob,
+    New-TkWorker, Start-TkJob, Receive-TkJob, Complete-TkJob, Stop-TkJob, Invoke-TkWorkerCommand,
     ConvertTo-TkFlatObject, ConvertTo-TkDataTable, Import-TkStyle, Import-TkXaml, Write-TkLogFile,
     Get-TkSystemTheme, Resolve-TkTheme, Get-TkTheme, Set-TkTheme,
     Split-TkList, ConvertTo-TkLabel, Get-TkSuggestedId, Get-TkScriptAnalysis, New-TkModule, Set-TkModuleTag,

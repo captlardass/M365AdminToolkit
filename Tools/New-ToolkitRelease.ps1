@@ -11,7 +11,8 @@
       2. Optionally sign every .ps1/.psm1 with a code-signing certificate, timestamped so the
          signatures stay valid after the certificate expires. Fails if any signature isn't Valid.
       3. Zip, then hash the final ZIP into SHA256SUMS.txt (sha256sum format).
-    Publish the ZIP and SHA256SUMS.txt together, e.g. as assets of the GitHub release for the tag.
+    Also writes a copy of the signed Get-M365AdminToolkit.ps1 next to the ZIP.
+    Publish all three with Tools\Publish-ToolkitRelease.ps1 (a GitHub release for the tag).
     An existing version is never overwritten: published files must not change.
 
 .PARAMETER Version
@@ -53,6 +54,8 @@ if (-not $Ref) { $Ref = "v$Version" }
 $name = "M365AdminToolkit-$Version"
 $zipPath = Join-Path $OutputPath "$name.zip"
 $sumsPath = Join-Path $OutputPath "$name.SHA256SUMS.txt"
+# The signed download-and-install script, published on its own as Get-M365AdminToolkit.ps1.
+$bootstrapPath = Join-Path $OutputPath "$name.Get-M365AdminToolkit.ps1"
 # In the repository for development only; not part of what users run.
 $devOnly = 'Tests', 'CLAUDE.md', '.gitattributes', '.gitignore'
 
@@ -61,7 +64,7 @@ $commit = git -C $root rev-parse --verify --quiet "$Ref^{commit}"
 if ($LASTEXITCODE -or -not $commit) {
     throw "'$Ref' is not a commit or tag. Commit your changes, then tag the release: git tag -a v$Version -m 'M365 Admin Toolkit $Version'"
 }
-if ((Test-Path -LiteralPath $zipPath) -or (Test-Path -LiteralPath $sumsPath)) {
+if ((Test-Path -LiteralPath $zipPath) -or (Test-Path -LiteralPath $sumsPath) -or (Test-Path -LiteralPath $bootstrapPath)) {
     throw "$name already exists in $OutputPath. Published versions must not change - use a new version number."
 }
 $certificate = $null
@@ -100,14 +103,21 @@ try {
     # 2. Sign before zipping: the checksum must cover the signed files.
     $signed = 0
     if ($certificate) {
-        foreach ($file in Get-ChildItem -LiteralPath $package -Recurse -File -Include *.ps1, *.psm1) {
+        # Filtered by extension: -Include is ignored together with -LiteralPath in 5.1.
+        foreach ($file in Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1' }) {
             $result = Set-AuthenticodeSignature -LiteralPath $file.FullName -Certificate $certificate -TimestampServer $TimestampServer -HashAlgorithm SHA256
             if ($result.Status -ne 'Valid') {
                 throw "Signing $($file.Name) gave status '$($result.Status)': $($result.StatusMessage). Is the certificate's root trusted on this PC?"
             }
             $signed++
         }
-        Write-Host "Signed $signed script(s) as '$($certificate.Subject)'."
+        # Only scripts can carry a signature. A signed catalog covers every file (XAML, JSON...), so
+        # Get-M365AdminToolkit.ps1 can prove the whole package is untouched, with no files added or missing.
+        $catalog = Join-Path $package 'M365AdminToolkit.cat'
+        [void](New-FileCatalog -Path $package -CatalogFilePath $catalog -CatalogVersion 2.0)
+        $result = Set-AuthenticodeSignature -LiteralPath $catalog -Certificate $certificate -TimestampServer $TimestampServer -HashAlgorithm SHA256
+        if ($result.Status -ne 'Valid') { throw "Signing the file catalog gave status '$($result.Status)': $($result.StatusMessage)" }
+        Write-Host "Signed $signed script(s) and the file catalog as '$($certificate.Subject)'."
     }
 
     # 3. Zip and hash.
@@ -117,6 +127,10 @@ try {
     $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     # sha256sum format ("<hash>  <file>"), so `sha256sum -c` works too.
     [IO.File]::WriteAllText($sumsPath, "$hash  $name.zip`n", (New-Object Text.UTF8Encoding $false))
+    # Same signed copy as in the ZIP: it trusts only toolkit scripts signed by its own signer.
+    $bootstrap = Join-Path $package 'Get-M365AdminToolkit.ps1'
+    if (Test-Path -LiteralPath $bootstrap) { Copy-Item -LiteralPath $bootstrap -Destination $bootstrapPath }
+    else { $bootstrapPath = $null }
 }
 finally {
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
@@ -125,5 +139,6 @@ finally {
 Write-Host "Release $Version from $($commit.Substring(0, 7)):"
 Write-Host "  $zipPath"
 Write-Host "  SHA-256 $hash"
-if (-not $certificate) { Write-Host '  Unsigned: the scripts carry no publisher signature (checksum only).' }
-[pscustomobject]@{ Version = $Version; Commit = $commit; Zip = $zipPath; Sha256 = $hash; ChecksumFile = $sumsPath; SignedFiles = $signed }
+if ($bootstrapPath) { Write-Host "  $bootstrapPath" }
+if (-not $certificate) { Write-Host '  Unsigned: the scripts carry no publisher signature (checksum only). Get-M365AdminToolkit.ps1 refuses unsigned builds.' }
+[pscustomobject]@{ Version = $Version; Commit = $commit; Zip = $zipPath; Sha256 = $hash; ChecksumFile = $sumsPath; Bootstrap = $bootstrapPath; SignedFiles = $signed }
