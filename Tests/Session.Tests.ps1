@@ -17,9 +17,10 @@ function Get-MgContext { $script:Context }
 function Connect-MgGraph {
     [CmdletBinding()]
     param([string[]] $Scopes, [string] $TenantId, [string] $ClientId, [string] $CertificateThumbprint, [string] $ContextScope, [switch] $NoWelcome)
-    $global:FakeGraphConnects.Add([pscustomobject]@{ Scopes = $Scopes; ContextScope = $ContextScope; WamDisabled = $script:Wam })
+    $global:FakeGraphConnects.Add([pscustomobject]@{ Scopes = $Scopes; ContextScope = $ContextScope; WamDisabled = $script:Wam; ClientId = $ClientId })
+    if ($env:FAKE_CONNECT_FAIL) { throw 'InteractiveBrowserCredential authentication failed: ' }
     $script:Context = [pscustomobject]@{ TenantId = $env:FAKE_GRAPH_TENANT; Scopes = $Scopes; Account = 'admin@contoso.example'
-        AuthType = $(if ($ClientId) { 'AppOnly' } else { 'Delegated' }); AppName = 'Contoso app' }
+        AuthType = $(if ($CertificateThumbprint) { 'AppOnly' } else { 'Delegated' }); AppName = 'Contoso app' }
 }
 function Disconnect-MgGraph { [CmdletBinding()] param() if (-not $env:FAKE_STUCK) { $script:Context = $null } }
 function Get-MgGraphOption { [pscustomobject]@{ DisableLoginByWAM = $script:Wam } }
@@ -51,6 +52,7 @@ $env:FAKE_GRAPH_TENANT = $tenantA
 $env:FAKE_EXO_TENANT = $tenantA
 $env:FAKE_ORG_NAME = 'Contoso Example'
 $env:FAKE_STUCK = ''
+$env:FAKE_CONNECT_FAIL = ''
 
 $global:TkSettings = $null
 . "$Root\Core\Toolkit.Worker.ps1"
@@ -58,7 +60,7 @@ $global:InformationPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 
 function Reset-Fakes {
-    $env:FAKE_GRAPH_TENANT = $tenantA; $env:FAKE_EXO_TENANT = $tenantA; $env:FAKE_ORG_NAME = 'Contoso Example'; $env:FAKE_STUCK = ''
+    $env:FAKE_GRAPH_TENANT = $tenantA; $env:FAKE_EXO_TENANT = $tenantA; $env:FAKE_ORG_NAME = 'Contoso Example'; $env:FAKE_STUCK = ''; $env:FAKE_CONNECT_FAIL = ''
     $global:TkSettings = $null
     try { Disconnect-TkAll } catch { }
     $global:TkSignOutReason = ''
@@ -211,6 +213,21 @@ try {
     $global:TkSettings = [pscustomobject]@{ Graph = [pscustomobject]@{ TenantId = $tenantA; ClientId = '11111111-1111-1111-1111-111111111111'; CertificateThumbprint = 'ABCDEF' } }
     Connect-TkGraph
     Check 'App-only sign-in also uses an in-memory token cache' (($global:FakeGraphConnects | Select-Object -Last 1).ContextScope -eq 'Process' -and $global:TkSession.TenantId -eq $tenantA) ''
+
+    Reset-Fakes
+    $global:TkSettings = [pscustomobject]@{ Graph = [pscustomobject]@{ ClientId = '22222222-2222-2222-2222-222222222222' } }
+    Connect-TkGraph -Scopes 'User.Read.All'
+    $c = $global:FakeGraphConnects | Select-Object -Last 1
+    Check 'A ClientId without a certificate signs in interactively with that app' ($c.ClientId -eq '22222222-2222-2222-2222-222222222222' -and (Get-MgContext).AuthType -eq 'Delegated') ($c | ConvertTo-Json -Compress)
+    Check '...still bypassing WAM, with an in-memory token cache' ($c.WamDisabled -eq $true -and $c.ContextScope -eq 'Process' -and (Get-MgGraphOption).DisableLoginByWAM -eq $false) ($c | ConvertTo-Json -Compress)
+    Check '...and pinned to the signed-in tenant' ($global:TkSession.TenantId -eq $tenantA) ''
+
+    Reset-Fakes
+    $env:FAKE_CONNECT_FAIL = '1'
+    $err = Get-Error { Connect-TkGraph }
+    Check 'A failed sign-in with the default app explains the ClientId fix' ($err -match 'Graph.ClientId' -and -not (Test-TkGraphConnected) -and -not $global:TkSession) $err
+    Check "...and the user's own WAM setting is still put back" ((Get-MgGraphOption).DisableLoginByWAM -eq $false) ''
+    $env:FAKE_CONNECT_FAIL = ''
 
     Reset-Fakes
     Connect-TkGraph

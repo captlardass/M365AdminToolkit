@@ -79,6 +79,19 @@ input form, a results grid, CSV export and a safe dry run.
    Alternatively, clone the repository or download and check the ZIP yourself (see
    [Checking a download](#checking-a-download)), extract it and double-click **`Install-Toolkit.cmd`**.
 
+   > **Using the source code instead of a release?** *Code > Download ZIP* on GitHub, or a clone, gives you
+   > **unsigned** scripts. Only release packages are signed. Windows then asks before running them:
+   > - A downloaded ZIP is marked as coming from the internet, so PowerShell blocks its scripts
+   >   (*not digitally signed* / *cannot be loaded*). Unblock the files once, from the extracted folder:
+   >   `Get-ChildItem -Recurse | Unblock-File`
+   > - If your execution policy still refuses unsigned scripts (for example `AllSigned` set by your
+   >   organisation), allow them for that one PowerShell process only. This doesn't change your system settings:
+   >   `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+   > - If Windows asks whether to run software from an unknown or untrusted publisher, that's expected for
+   >   unsigned code. Only answer yes if you got the code from this repository yourself.
+   >
+   > For everyday use, prefer the signed release (`Get-M365AdminToolkit.ps1`). It doesn't need any of this.
+
 3. **What the installer does.** No admin rights are needed, and nothing is written machine-wide. The installer:
    - copies the toolkit to the folder you choose (default `%LOCALAPPDATA%\Programs\M365AdminToolkit`) and unblocks the files
    - adds **M365 Admin Toolkit** to the Start menu and the desktop
@@ -114,7 +127,10 @@ input form, a results grid, CSV export and a safe dry run.
 
    The toolkit calls Graph through `Invoke-MgGraphRequest`, so the full `Microsoft.Graph` bundle is not required.
 
-5. **(Optional) Set up app-only sign-in.** See [App-only sign-in](#app-only-sign-in-optional).
+5. **(Recommended) Use your own app for Graph sign-in.** With current Graph modules, sign-in through
+   Microsoft's default app can fail in the toolkit. See
+   [Interactive sign-in with your own app](#interactive-sign-in-with-your-own-app-recommended).
+   For unattended use, see [App-only sign-in](#app-only-sign-in-optional).
 
 ## Running the toolkit
 
@@ -182,7 +198,10 @@ sleep and closing the toolkit always end a session and can't be switched off.
 **Nothing is reused from an earlier launch.** Graph signs in with an in-memory token cache
 (`-ContextScope Process`), so no token is written to disk. Sign-in also bypasses WAM, the Windows sign-in
 broker. WAM silently reuses an account's tokens even after a restart, so without it the browser asks which
-account to use every time. Your own Graph WAM setting is put back straight after sign-in. Graph and Exchange
+account to use every time. Your own Graph WAM setting is put back straight after sign-in. Newer
+`Microsoft.Graph.Authentication` versions only let WAM be bypassed when you sign in through your own app
+registration. With Microsoft's default app they always use WAM, and that can fail from the toolkit (see
+[Interactive sign-in with your own app](#interactive-sign-in-with-your-own-app-recommended)). Graph and Exchange
 keep connections for the whole PowerShell process, so a connection the toolkit didn't make in this launch
 is ended before use. That includes one from an earlier launch in the same PowerShell window or from a
 `Connect-MgGraph` you ran yourself.
@@ -415,6 +434,34 @@ this session. It is hidden for modules that haven't reported a figure, and the i
 
 The self-test module shows a working example with dummy data.
 
+## Interactive sign-in with your own app (recommended)
+
+Newer versions of `Microsoft.Graph.Authentication` always sign in through WAM (the Windows sign-in broker)
+when they use Microsoft's default app. `Set-MgGraphOption -DisableLoginByWAM` only works with your own app.
+In the toolkit, WAM sign-in can fail straight away with an empty
+*InteractiveBrowserCredential authentication failed:* error. Even when WAM works, it silently reuses an account
+instead of asking which one to use.
+
+Signing in through your own app registration avoids both problems. You still sign in as yourself, with your own
+permissions, in a normal browser window:
+
+1. In Microsoft Entra ID, go to *App registrations > New registration*. Pick *Accounts in any organizational
+   directory (multitenant)* if you'll use it in several tenants, or *single tenant* for one.
+2. Under *Authentication*, add the platform *Mobile and desktop applications* with the redirect URI
+   `http://localhost`, and set *Allow public client flows* to **Yes**.
+3. Don't add a secret or a certificate. The toolkit asks for the delegated Graph permissions each module needs
+   when you sign in. An admin may need to consent to them once per tenant.
+4. Copy `Config\settings.example.json` to `Config\settings.json` and put the app's *Application (client) ID* in
+   `Graph.ClientId`. Leave `Graph.CertificateThumbprint` empty: a thumbprint switches to app-only sign-in.
+   Optionally, set `Graph.TenantId` to always sign in to one tenant.
+
+```json
+{ "Graph": { "TenantId": "", "ClientId": "00000000-0000-0000-0000-000000000000", "CertificateThumbprint": "" } }
+```
+
+The [session rules](#sign-in-sessions-and-tenants) are unchanged: the token stays in memory, and each
+session is pinned to one tenant.
+
 ## App-only sign-in (optional)
 
 To sign in with an app registration instead of your own account, copy `Config\settings.example.json` to
@@ -534,7 +581,8 @@ directly.
 
 | Problem | Fix |
 |---|---|
-| *Scripts are blocked* / *not digitally signed* | Run `Unblock-File` on the folder (see [Installation](#installation)) |
+| *Scripts are blocked* / *not digitally signed* | Run `Unblock-File` on the folder, or use the signed release (see [Installation](#installation)) |
+| Graph sign-in fails at once: *InteractiveBrowserCredential authentication failed:* after a WAM note | Newer Graph modules force WAM with Microsoft's default app. Set `Graph.ClientId` to your own app (see [Interactive sign-in with your own app](#interactive-sign-in-with-your-own-app-recommended)) |
 | Graph and Exchange together fail with an assembly or MSAL error | Known conflict between the two modules in Windows PowerShell 5.1. Connect to Exchange first, or run under PowerShell 7. Also check *Settings > Installed PowerShell modules* for Graph version mismatches |
 | A module shows in red | Select it to see the problems, or run `.\Tools\Test-ToolkitModules.ps1` |
 | A run finishes with 0 results and an error | Check the *Log* tab. The error is from the module script |

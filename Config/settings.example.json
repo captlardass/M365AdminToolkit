@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to settings.json to use it. Leave values empty for interactive sign-in. Certificate auth only - never put client secrets in this file.",
+  "_comment": "Copy to settings.json to use it. Leave values empty for interactive sign-in with Microsoft's default app. Graph ClientId alone (no thumbprint): interactive sign-in with your own app registration. ClientId + CertificateThumbprint: app-only. Certificate auth only - never put client secrets in this file.",
   "Graph": {
     "TenantId": "",
     "ClientId": "",

@@ -259,6 +259,9 @@ function Connect-TkGraph {
         $allScopes = @(@($Scopes) + @(if ($context) { $context.Scopes }) + 'User.Read' | Where-Object { $_ } | Sort-Object -Unique)
         $connect = @{ Scopes = $allScopes; ContextScope = 'Process'; NoWelcome = $true; ErrorAction = 'Stop' }
         if ($cfg -and $cfg.TenantId) { $connect.TenantId = $cfg.TenantId }
+        # Own app registration (ClientId without a certificate): newer Graph modules only honour
+        # DisableLoginByWAM with a custom ClientId; with the default one WAM is always used.
+        if ($cfg -and $cfg.ClientId) { $connect.ClientId = $cfg.ClientId }
 
         # Bypass WAM for this sign-in so the browser asks which account to use, then put the user's own setting back.
         $wamOption = [bool](Get-Command Set-MgGraphOption -ParameterName DisableLoginByWAM -ErrorAction SilentlyContinue)
@@ -266,6 +269,14 @@ function Connect-TkGraph {
         if ($restoreWam) { Set-MgGraphOption -DisableLoginByWAM $true | Out-Null }
         Write-Information ("Connecting to Microsoft Graph (scopes: {0})..." -f ($allScopes -join ', '))
         try { Connect-MgGraph @connect }
+        catch {
+            if (-not $connect.ClientId -and $_.Exception.Message -match 'InteractiveBrowserCredential') {
+                throw ("Graph sign-in failed: {0} Newer Microsoft.Graph.Authentication versions always sign in through WAM " +
+                    "with the default app, and WAM can fail from the toolkit. Set Graph.ClientId in Config\settings.json " +
+                    "to your own app registration (README: 'Interactive sign-in with your own app').") -f $_.Exception.Message
+            }
+            throw
+        }
         finally { if ($restoreWam) { Set-MgGraphOption -DisableLoginByWAM $false | Out-Null } }
     }
     Register-TkSignIn -Service Graph
