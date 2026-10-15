@@ -23,10 +23,11 @@ Read README.md for the architecture and the module contract.
 - Log with Write-Information/Write-Warning; never Read-Host or other prompts.
 - Always finish with `.\Tools\Test-ToolkitModules.ps1 -IncludeTemplate` (must exit 0).
 - Modules in `Modules/` may be the user's own work - don't edit ones you didn't create unless asked.
-- `Modules/` is git-ignored except `_Template` and `Demo.SelfTest`: the user's modules stay private. Never un-ignore or `git add -f` them.
+- `Modules/` is git-ignored except the modules listed as `!Modules/<Id>/` in `.gitignore`: those are published and ship in the Full edition. New modules stay private: only add one to that list when the user asks, never `git add -f`.
 
 ## Releases
 - Build with `Tools/New-ToolkitRelease.ps1` only: it packages a tagged commit, signs, then hashes. Order matters - hash after signing.
+- Each release has two editions from the same commit: Core (`M365AdminToolkit-<v>.zip`, only `_Template` + `Demo.SelfTest`) and Full (`M365AdminToolkit-<v>-Full.zip`, every committed module), one SHA256SUMS file with a line per ZIP, and an `EDITION` file in each. Keep the Core ZIP name unchanged: older `Get-M365AdminToolkit.ps1` copies look for it. Don't weaken the tenant-data gate in the build.
 - Publish with `Tools/Publish-ToolkitRelease.ps1` (draft, upload, publish). `Get-M365AdminToolkit.ps1` trusts only its own signer and fails closed: never add a bypass that skips the hash, signature, catalog or zip-slip checks.
 - Never overwrite or rebuild a published version; bump the version. Never commit certificates, keys or thumbprints.
 

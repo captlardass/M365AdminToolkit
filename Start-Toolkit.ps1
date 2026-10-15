@@ -40,8 +40,12 @@ $ui = Import-TkXaml -Path (Join-Path $PSScriptRoot 'Core\MainWindow.xaml')
 # Release builds carry a VERSION file (Tools\New-ToolkitRelease.ps1); a git clone doesn't.
 $versionFile = Join-Path $PSScriptRoot 'VERSION'
 $toolkitVersion = if (Test-Path -LiteralPath $versionFile) { (Get-Content -LiteralPath $versionFile -TotalCount 1).Trim() } else { 'dev' }
+$editionFile = Join-Path $PSScriptRoot 'EDITION'
+$toolkitEdition = if (Test-Path -LiteralPath $editionFile) { (Get-Content -LiteralPath $editionFile -TotalCount 1).Trim() } else { $null }
 $ui.VersionText.Text = $toolkitVersion
-$ui.VersionText.ToolTip = if ($toolkitVersion -eq 'dev') { 'Development copy (no VERSION file): not installed from a release' } else { "Toolkit version $toolkitVersion" }
+$ui.VersionText.ToolTip = if ($toolkitVersion -eq 'dev') { 'Development copy (no VERSION file): not installed from a release' }
+    elseif ($toolkitEdition) { "Toolkit version $toolkitVersion, $toolkitEdition edition" }
+    else { "Toolkit version $toolkitVersion" }
 $ui.Window.Title = "$($ui.Window.Title) $toolkitVersion"
 $baseTitle = $ui.Window.Title      # Show-Tenant appends the tenant, so it shows in the taskbar too
 $ui.MainTabs.SelectedItem = $ui.ModulesTab     # always open on the Modules page

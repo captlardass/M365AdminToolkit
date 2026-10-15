@@ -1,18 +1,22 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Builds a release ZIP of the toolkit plus a SHA-256 checksum file, optionally Authenticode-signing
-    the PowerShell scripts first.
+    Builds the two release ZIPs of the toolkit (Core and Full) plus one SHA-256 checksum file,
+    optionally Authenticode-signing the PowerShell scripts first.
 
 .DESCRIPTION
     Follows the usual order for publishing software:
       1. Package exactly one committed version (git archive of tag v<Version>), so local edits and
          git-ignored private modules never ship. Tests and notes for Claude are left out.
-      2. Optionally sign every .ps1/.psm1 with a code-signing certificate, timestamped so the
+         The build stops if a shipped file contains what looks like a real e-mail address or tenant.
+      2. Split it into two editions, each with an EDITION file:
+           Core - the program with only the sample modules (_Template, Demo.SelfTest)
+           Full - the program with every committed module
+      3. Optionally sign every .ps1/.psm1 with a code-signing certificate, timestamped so the
          signatures stay valid after the certificate expires. Fails if any signature isn't Valid.
-      3. Zip, then hash the final ZIP into SHA256SUMS.txt (sha256sum format).
-    Also writes a copy of the signed Get-M365AdminToolkit.ps1 next to the ZIP.
-    Publish all three with Tools\Publish-ToolkitRelease.ps1 (a GitHub release for the tag).
+      4. Zip, then hash the final ZIPs into one SHA256SUMS.txt (sha256sum format, a line per ZIP).
+    Also writes a copy of the signed Get-M365AdminToolkit.ps1 next to the ZIPs.
+    Publish them with Tools\Publish-ToolkitRelease.ps1 (a GitHub release for the tag).
     An existing version is never overwritten: published files must not change.
 
 .PARAMETER Version
@@ -22,7 +26,7 @@
     Commit or tag to package. Defaults to the tag v<Version>. Use HEAD only for test builds.
 
 .PARAMETER OutputPath
-    Folder for the ZIP and checksum file. Defaults to .\Release (git-ignored).
+    Folder for the ZIPs and checksum file. Defaults to .\Release (git-ignored).
 
 .PARAMETER CertificateThumbprint
     Thumbprint of a code-signing certificate (with private key) in Cert:\CurrentUser\My.
@@ -52,19 +56,24 @@ $root = Split-Path $PSScriptRoot -Parent
 if (-not $OutputPath) { $OutputPath = Join-Path $root 'Release' }
 if (-not $Ref) { $Ref = "v$Version" }
 $name = "M365AdminToolkit-$Version"
-$zipPath = Join-Path $OutputPath "$name.zip"
+# Core keeps the original ZIP name, so Get-M365AdminToolkit.ps1 copies from older releases still find it.
+$zipPaths = [ordered]@{ Core = Join-Path $OutputPath "$name.zip"; Full = Join-Path $OutputPath "$name-Full.zip" }
 $sumsPath = Join-Path $OutputPath "$name.SHA256SUMS.txt"
 # The signed download-and-install script, published on its own as Get-M365AdminToolkit.ps1.
 $bootstrapPath = Join-Path $OutputPath "$name.Get-M365AdminToolkit.ps1"
 # In the repository for development only; not part of what users run.
 $devOnly = 'Tests', 'CLAUDE.md', '.gitattributes', '.gitignore'
+# The only modules in the Core edition. Full has every committed module.
+$coreModules = '_Template', 'Demo.SelfTest'
+# Placeholder domains that may appear in shipped files; any other address or tenant name stops the build.
+$placeholderDomain = '(^|\.)(contoso\.example|example\.(com|net|org)|[a-z0-9-]+\.(example|invalid|test|localhost))$'
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is needed to package a committed version.' }
 $commit = git -C $root rev-parse --verify --quiet "$Ref^{commit}"
 if ($LASTEXITCODE -or -not $commit) {
     throw "'$Ref' is not a commit or tag. Commit your changes, then tag the release: git tag -a v$Version -m 'M365 Admin Toolkit $Version'"
 }
-if ((Test-Path -LiteralPath $zipPath) -or (Test-Path -LiteralPath $sumsPath) -or (Test-Path -LiteralPath $bootstrapPath)) {
+if (@(@($zipPaths.Values) + $sumsPath + $bootstrapPath | Where-Object { Test-Path -LiteralPath $_ }).Count) {
     throw "$name already exists in $OutputPath. Published versions must not change - use a new version number."
 }
 $certificate = $null
@@ -77,34 +86,30 @@ if ($CertificateThumbprint) {
 $dirty = git -C $root status --porcelain --untracked-files=no
 if ($dirty -and $Ref -eq 'HEAD') { Write-Warning 'There are uncommitted changes: they are NOT in this build, which packages the last commit.' }
 
-$staging = Join-Path ([IO.Path]::GetTempPath()) "TkRelease_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
-try {
-    # 1. Exactly what is committed at $Ref.
-    $archive = "$staging.zip"
-    git -C $root archive --format=zip -o $archive $commit
-    if ($LASTEXITCODE) { throw "git archive failed for $Ref." }
-    $package = Join-Path $staging 'M365AdminToolkit'
-    Expand-Archive -LiteralPath $archive -DestinationPath $package
-    Remove-Item -LiteralPath $archive -Force
-    foreach ($item in $devOnly) {
-        $path = Join-Path $package $item
-        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
-    }
-    # Older commits may still contain modules that are private now: apply today's .gitignore to them.
-    foreach ($module in Get-ChildItem -LiteralPath (Join-Path $package 'Modules') -Directory -ErrorAction SilentlyContinue) {
-        git -C $root check-ignore -q --no-index "Modules/$($module.Name)/module.json"
-        if (-not $LASTEXITCODE) {
-            Write-Warning "Left out Modules\$($module.Name): it is git-ignored (private) now."
-            Remove-Item -LiteralPath $module.FullName -Recurse -Force
+function Assert-NoTenantData([string] $Folder) {
+    <# Fails closed: shipped files may only contain placeholder addresses and tenant names. #>
+    $found = foreach ($file in Get-ChildItem -LiteralPath $Folder -Recurse -File) {
+        # One pattern: with several, Select-String reports only the first that matches on a line.
+        foreach ($hit in Select-String -LiteralPath $file.FullName -AllMatches -Pattern '[A-Za-z0-9._%+-]+@(?<d>[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})|\b(?<d>[A-Za-z0-9-]+\.onmicrosoft\.com)\b') {
+            foreach ($match in $hit.Matches) {
+                $domain = $match.Groups['d'].Value.ToLowerInvariant()
+                if ($domain -notmatch $placeholderDomain -and $domain -ne 'contoso.onmicrosoft.com') {
+                    '{0}:{1}: {2}' -f $file.FullName.Substring($Folder.Length + 1), $hit.LineNumber, $match.Value
+                }
+            }
         }
     }
-    [IO.File]::WriteAllText((Join-Path $package 'VERSION'), "$Version`r`n")
+    if ($found) { throw "Possible real tenant data in the package - replace it with contoso.example placeholders:`n  $(@($found) -join "`n  ")" }
+}
 
-    # 2. Sign before zipping: the checksum must cover the signed files.
+function New-EditionZip([string] $Package, [string] $Edition, [string] $ZipPath) {
+    <# Signs (optionally) and zips one edition. Returns the number of signed scripts. #>
+    [IO.File]::WriteAllText((Join-Path $Package 'EDITION'), "$Edition`r`n")
+    # Sign before zipping: the checksum must cover the signed files.
     $signed = 0
     if ($certificate) {
         # Filtered by extension: -Include is ignored together with -LiteralPath in 5.1.
-        foreach ($file in Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1' }) {
+        foreach ($file in Get-ChildItem -LiteralPath $Package -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1' }) {
             $result = Set-AuthenticodeSignature -LiteralPath $file.FullName -Certificate $certificate -TimestampServer $TimestampServer -HashAlgorithm SHA256
             if ($result.Status -ne 'Valid') {
                 throw "Signing $($file.Name) gave status '$($result.Status)': $($result.StatusMessage). Is the certificate's root trusted on this PC?"
@@ -113,22 +118,65 @@ try {
         }
         # Only scripts can carry a signature. A signed catalog covers every file (XAML, JSON...), so
         # Get-M365AdminToolkit.ps1 can prove the whole package is untouched, with no files added or missing.
-        $catalog = Join-Path $package 'M365AdminToolkit.cat'
-        [void](New-FileCatalog -Path $package -CatalogFilePath $catalog -CatalogVersion 2.0)
+        $catalog = Join-Path $Package 'M365AdminToolkit.cat'
+        [void](New-FileCatalog -Path $Package -CatalogFilePath $catalog -CatalogVersion 2.0)
         $result = Set-AuthenticodeSignature -LiteralPath $catalog -Certificate $certificate -TimestampServer $TimestampServer -HashAlgorithm SHA256
         if ($result.Status -ne 'Valid') { throw "Signing the file catalog gave status '$($result.Status)': $($result.StatusMessage)" }
-        Write-Host "Signed $signed script(s) and the file catalog as '$($certificate.Subject)'."
+        Write-Host "$Edition`: signed $signed script(s) and the file catalog as '$($certificate.Subject)'."
     }
+    [IO.Compression.ZipFile]::CreateFromDirectory($Package, $ZipPath, [IO.Compression.CompressionLevel]::Optimal, $true)
+    $signed
+}
 
-    # 3. Zip and hash.
+$staging = Join-Path ([IO.Path]::GetTempPath()) "TkRelease_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+try {
+    # 1. Exactly what is committed at $Ref.
+    $archive = "$staging.zip"
+    git -C $root archive --format=zip -o $archive $commit
+    if ($LASTEXITCODE) { throw "git archive failed for $Ref." }
+    $base = Join-Path $staging 'base'
+    Expand-Archive -LiteralPath $archive -DestinationPath $base
+    Remove-Item -LiteralPath $archive -Force
+    foreach ($item in $devOnly) {
+        $path = Join-Path $base $item
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    }
+    # Older commits may still contain modules that are private now: apply today's .gitignore to them.
+    foreach ($module in Get-ChildItem -LiteralPath (Join-Path $base 'Modules') -Directory -ErrorAction SilentlyContinue) {
+        git -C $root check-ignore -q --no-index "Modules/$($module.Name)/module.json"
+        if (-not $LASTEXITCODE) {
+            Write-Warning "Left out Modules\$($module.Name): it is git-ignored (private) now."
+            Remove-Item -LiteralPath $module.FullName -Recurse -Force
+        }
+    }
+    Assert-NoTenantData $base
+    [IO.File]::WriteAllText((Join-Path $base 'VERSION'), "$Version`r`n")
+    $fullModules = @(Get-ChildItem -LiteralPath (Join-Path $base 'Modules') -Directory -ErrorAction SilentlyContinue | Where-Object Name -notin $coreModules | ForEach-Object Name)
+    if (-not $fullModules.Count) { Write-Warning 'No modules beyond the samples are committed: the Full edition is the same as Core.' }
+
+    # 2.-4. One package per edition, each signed and zipped on its own.
     if (-not (Test-Path -LiteralPath $OutputPath)) { [void](New-Item -ItemType Directory -Path $OutputPath -Force) }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [IO.Compression.ZipFile]::CreateFromDirectory($package, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $true)
-    $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $signed = 0
+    $hashes = [ordered]@{}
+    foreach ($edition in $zipPaths.Keys) {
+        $package = Join-Path $staging "$edition\M365AdminToolkit"
+        [void](New-Item -ItemType Directory -Path (Split-Path $package -Parent))
+        Copy-Item -LiteralPath $base -Destination $package -Recurse
+        if ($edition -eq 'Core') {
+            foreach ($module in Get-ChildItem -LiteralPath (Join-Path $package 'Modules') -Directory -ErrorAction SilentlyContinue | Where-Object Name -notin $coreModules) {
+                Remove-Item -LiteralPath $module.FullName -Recurse -Force
+            }
+            # Same signed copy as in the ZIP: it trusts only toolkit scripts signed by its own signer.
+            $corePackage = $package
+        }
+        $signed += New-EditionZip -Package $package -Edition $edition -ZipPath $zipPaths[$edition]
+        $hashes[$edition] = (Get-FileHash -LiteralPath $zipPaths[$edition] -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
     # sha256sum format ("<hash>  <file>"), so `sha256sum -c` works too.
-    [IO.File]::WriteAllText($sumsPath, "$hash  $name.zip`n", (New-Object Text.UTF8Encoding $false))
-    # Same signed copy as in the ZIP: it trusts only toolkit scripts signed by its own signer.
-    $bootstrap = Join-Path $package 'Get-M365AdminToolkit.ps1'
+    $sums = foreach ($edition in $zipPaths.Keys) { "$($hashes[$edition])  $(Split-Path $zipPaths[$edition] -Leaf)`n" }
+    [IO.File]::WriteAllText($sumsPath, (-join $sums), (New-Object Text.UTF8Encoding $false))
+    $bootstrap = Join-Path $corePackage 'Get-M365AdminToolkit.ps1'
     if (Test-Path -LiteralPath $bootstrap) { Copy-Item -LiteralPath $bootstrap -Destination $bootstrapPath }
     else { $bootstrapPath = $null }
 }
@@ -137,8 +185,15 @@ finally {
 }
 
 Write-Host "Release $Version from $($commit.Substring(0, 7)):"
-Write-Host "  $zipPath"
-Write-Host "  SHA-256 $hash"
+Write-Host "  Core: $($zipPaths.Core)"
+Write-Host "        SHA-256 $($hashes.Core)"
+Write-Host "  Full: $($zipPaths.Full) ($($fullModules.Count) module(s) beyond the samples)"
+Write-Host "        SHA-256 $($hashes.Full)"
 if ($bootstrapPath) { Write-Host "  $bootstrapPath" }
 if (-not $certificate) { Write-Host '  Unsigned: the scripts carry no publisher signature (checksum only). Get-M365AdminToolkit.ps1 refuses unsigned builds.' }
-[pscustomobject]@{ Version = $Version; Commit = $commit; Zip = $zipPath; Sha256 = $hash; ChecksumFile = $sumsPath; Bootstrap = $bootstrapPath; SignedFiles = $signed }
+[pscustomobject]@{
+    Version = $Version; Commit = $commit
+    Zip = $zipPaths.Core; Sha256 = $hashes.Core
+    FullZip = $zipPaths.Full; FullSha256 = $hashes.Full; FullModules = $fullModules
+    ChecksumFile = $sumsPath; Bootstrap = $bootstrapPath; SignedFiles = $signed
+}

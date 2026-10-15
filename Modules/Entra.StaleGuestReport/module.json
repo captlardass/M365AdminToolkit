@@ -1,0 +1,20 @@
+{
+  "Id": "Entra.StaleGuestReport",
+  "Name": "Stale guest accounts report",
+  "Category": "Entra ID",
+  "Tags": ["Guests", "Security", "Report", "Clean-up"],
+  "Description": "Lists guest accounts with no interactive or non-interactive sign-in within the chosen number of days, including guests that never redeemed their invitation. Read-only. Needs Entra ID P1 or higher for sign-in activity.",
+  "Version": "1.1.0",
+  "Author": "M365 Admin Toolkit",
+  "EntryPoint": "module.ps1",
+  "SupportsWhatIf": false,
+  "ReadOnly": true,
+  "Requires": {
+    "ExchangeOnline": false,
+    "GraphScopes": ["User.Read.All", "AuditLog.Read.All"]
+  },
+  "Parameters": [
+    { "Name": "InactiveDays", "Label": "Inactive for at least (days)", "Type": "Int", "Default": 90, "Required": true },
+    { "Name": "IncludeNeverSignedIn", "Label": "Never signed in", "Type": "Bool", "Default": true, "HelpText": "Include guests with no recorded sign-in at all" }
+  ]
+}

@@ -58,7 +58,7 @@ $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M365A
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 # What belongs to the program: replaced on upgrade, removed on uninstall. Everything else is user data.
 $programItems = 'Core', 'Tools', 'Start-Toolkit.ps1', 'Start-Toolkit.cmd', 'Install-Toolkit.ps1', 'Install-Toolkit.cmd',
-    'Get-M365AdminToolkit.ps1', 'README.md', 'VERSION', 'Config\settings.example.json'
+    'Get-M365AdminToolkit.ps1', 'README.md', 'VERSION', 'EDITION', 'Config\settings.example.json'
 $defaultDestination = Join-Path $env:LOCALAPPDATA 'Programs\M365AdminToolkit'
 
 function Select-ToolkitFolder([string] $Default) {

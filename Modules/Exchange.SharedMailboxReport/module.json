@@ -1,0 +1,22 @@
+{
+  "Id": "Exchange.SharedMailboxReport",
+  "Name": "Shared mailbox report",
+  "Category": "Exchange Online",
+  "Tags": ["Shared mailbox", "Permissions", "Report"],
+  "Description": "Lists shared mailboxes with their Sent Items settings (keep a copy of mail sent as / on behalf of the mailbox) and counts how many users have Full Access, Send As, Send on Behalf and Inbox/Calendar folder permissions. Groups are expanded to their members, so the counts are effective users. Tick 'Detail' for one row per user and permission. Read-only.",
+  "Version": "1.0.0",
+  "Author": "M365 Admin Toolkit",
+  "EntryPoint": "module.ps1",
+  "SupportsWhatIf": false,
+  "ReadOnly": true,
+  "Requires": {
+    "ExchangeOnline": true,
+    "GraphScopes": []
+  },
+  "Parameters": [
+    { "Name": "Mailboxes", "Label": "Mailboxes", "Type": "List", "HelpText": "One UPN, alias or email address per line, e.g. sales@contoso.example. Leave empty if 'All shared mailboxes' is ticked." },
+    { "Name": "AllSharedMailboxes", "Label": "Scope", "Type": "Bool", "Default": false, "HelpText": "All shared mailboxes (ignores the list above)" },
+    { "Name": "IncludeFolderPermissions", "Label": "Folder permissions", "Type": "Bool", "Default": true, "HelpText": "Include Inbox and Calendar folder permissions. Untick for a faster run on large tenants." },
+    { "Name": "Detail", "Label": "Detail", "Type": "Bool", "Default": false, "HelpText": "One row per mailbox, user and permission instead of one summary row per mailbox." }
+  ]
+}

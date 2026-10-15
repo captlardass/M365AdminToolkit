@@ -1,0 +1,31 @@
+﻿{
+  "Id": "Entra.SmsVoiceRetirement",
+  "Name": "SMS/Voice MFA retirement check",
+  "Category": "Entra ID",
+  "Tags": [
+    "Security",
+    "Report"
+  ],
+  "Description": "Shows SMS and Voice authentication method policy scope, migration and registration campaign state, and what the Feb 2027 retirement of Microsoft-provided SMS/Voice means for the tenant. Read-only.",
+  "Version": "1.0.0",
+  "Author": "",
+  "EntryPoint": "module.ps1",
+  "SupportsWhatIf": false,
+  "ReadOnly": true,
+  "Requires": {
+    "ExchangeOnline": false,
+    "GraphScopes": [
+      "Policy.Read.All",
+      "Group.Read.All"
+    ]
+  },
+  "Parameters": [
+    {
+      "Name": "IncludeDisabledTargets",
+      "Label": "Include disabled targets",
+      "Type": "Bool",
+      "Default": false,
+      "HelpText": "Also list targets kept on a disabled SMS or Voice method. They are not active scope and are marked as such."
+    }
+  ]
+}

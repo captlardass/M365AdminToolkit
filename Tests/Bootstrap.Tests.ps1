@@ -25,6 +25,10 @@ else {
         $dest = "$work\good"
         $done = Setup ($local + @{ Destination = $dest; AllowUnsigned = $true })
         Check 'Verified release installs' ($done.Action -eq 'Installed' -and (Test-Path "$dest\Start-Toolkit.ps1") -and (Test-Path "$dest\VERSION")) "$($done.Action)"
+        Check 'Core install is marked as the Core edition' ((Get-Content "$dest\EDITION" -TotalCount 1) -eq 'Core') ''
+        $done = Setup @{ SourceZip = $release.FullZip; ChecksumFile = $release.ChecksumFile; Portable = $true; Destination = "$work\full"; AllowUnsigned = $true }
+        $missing = @($release.FullModules | Where-Object { -not (Test-Path "$work\full\Modules\$_\module.json") })
+        Check 'Full edition installs with its modules (shared checksum file)' ($done.Action -eq 'Installed' -and (Get-Content "$work\full\EDITION" -TotalCount 1) -eq 'Full' -and -not $missing.Count) "missing: $($missing -join ', ')"
         Check 'Temp download folder is cleaned up' (-not @(Get-ChildItem ([IO.Path]::GetTempPath()) -Directory -Filter 'TkSetup_*' | Where-Object LastWriteTime -gt (Get-Date).AddMinutes(-5)).Count) ''
 
         $bytes = [IO.File]::ReadAllBytes($release.Zip)

@@ -3,7 +3,18 @@ Logs/
 *.csv
 Release/
 
-# Your own modules stay on this PC; only the samples are shared.
+# New modules stay on this PC until you list them here. Listed modules are published:
+# the samples ship in both editions, the rest in the Full edition (Tools\New-ToolkitRelease.ps1).
 Modules/*
 !Modules/_Template/
 !Modules/Demo.SelfTest/
+!Modules/Custom.GetPasskeyRegistrationStatus/
+!Modules/Entra.DynamicGroupMemberOfReport/
+!Modules/Entra.LicensedPrivilegedUsers/
+!Modules/Entra.NestedGroupMembershipReport/
+!Modules/Entra.PrimaryAuthMethodReport/
+!Modules/Entra.SmsVoiceRetirement/
+!Modules/Entra.StaleGuestReport/
+!Modules/Exchange.CalendarDefaultPermission/
+!Modules/Exchange.SharedMailboxReport/
+!Modules/Intune.PCInventory/

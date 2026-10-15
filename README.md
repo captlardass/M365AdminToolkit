@@ -48,27 +48,38 @@ input form, a results grid, CSV export and a safe dry run.
 
 ## Installation
 
-1. **Download and install it.** Download **`Get-M365AdminToolkit.ps1`** from the latest
+1. **Choose an edition.** Every release comes in two editions with the same program. Only the modules differ:
+
+   | Edition | Release file | Pick it when |
+   |---|---|---|
+   | **Full** | `M365AdminToolkit-<version>-Full.zip` | You want to start straight away with the ready-made modules (see [Included modules](#included-modules)) |
+   | **Core** | `M365AdminToolkit-<version>.zip` | You want a clean toolkit and will add your own modules: only the module template and a self-test |
+
+   You can switch later: install the other edition over the top. Modules you added yourself are always kept.
+   The edition you have is shown in the tooltip on the version number in the toolkit window.
+
+2. **Download and install it.** Download **`Get-M365AdminToolkit.ps1`** from the latest
    [release](https://github.com/captlardass/M365AdminToolkit/releases/latest), then run it in a normal PowerShell
-   window. Don't use *Run as administrator*:
+   window. Don't use *Run as administrator*. It asks which edition you want:
 
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$env:USERPROFILE\Downloads\Get-M365AdminToolkit.ps1"
    ```
 
-   It asks where to install, downloads the release, then checks it before anything runs:
+   It asks where to install, downloads the edition you chose, then checks it before anything runs:
    - the ZIP's SHA-256 must match the release's checksum file
    - every script and the file catalog that covers all other files must carry a valid signature from the same
      publisher that signed `Get-M365AdminToolkit.ps1`
    - no file in the ZIP may point outside the package folder
 
-   If any check fails, it stops and installs nothing. Options: `-Destination <folder>`, `-Version 1.2.0`,
+   If any check fails, it stops and installs nothing. Options: `-Edition Full` or `-Edition Core` (skips the
+   question; `-NoGui` without `-Edition` installs Core), `-Destination <folder>`, `-Version 1.2.0`,
    `-IncludePrerelease`, `-DesktopShortcut`, `-Portable`, and `-NoGui` for scripted installs.
 
    Alternatively, clone the repository or download and check the ZIP yourself (see
    [Checking a download](#checking-a-download)), extract it and double-click **`Install-Toolkit.cmd`**.
 
-2. **What the installer does.** No admin rights are needed, and nothing is written machine-wide. The installer:
+3. **What the installer does.** No admin rights are needed, and nothing is written machine-wide. The installer:
    - copies the toolkit to the folder you choose (default `%LOCALAPPDATA%\Programs\M365AdminToolkit`) and unblocks the files
    - adds **M365 Admin Toolkit** to the Start menu and the desktop
    - adds an uninstall entry under *Settings > Apps* (for your account only)
@@ -94,7 +105,7 @@ input form, a results grid, CSV export and a safe dry run.
    You can also skip the installer and run the toolkit straight from the extracted folder (see below). In that
    case, unblock a downloaded ZIP first: `Get-ChildItem -Recurse | Unblock-File`.
 
-3. **Install the service modules** for your user. No admin rights are needed. The toolkit's **Settings** tab
+4. **Install the service modules** for your user. No admin rights are needed. The toolkit's **Settings** tab
    (*Installed PowerShell modules*) can do this for you, or run:
 
    ```powershell
@@ -103,7 +114,7 @@ input form, a results grid, CSV export and a safe dry run.
 
    The toolkit calls Graph through `Invoke-MgGraphRequest`, so the full `Microsoft.Graph` bundle is not required.
 
-4. **(Optional) Set up app-only sign-in.** See [App-only sign-in](#app-only-sign-in-optional).
+5. **(Optional) Set up app-only sign-in.** See [App-only sign-in](#app-only-sign-in-optional).
 
 ## Running the toolkit
 
@@ -234,15 +245,28 @@ them too. Bundles are removed before their sub-modules, and `Microsoft.Graph.Aut
 
 ## Included modules
 
-The repository only includes the samples. Everything else in `Modules\` is git-ignored, so your own scripts
-stay on your PC.
+Both editions include the samples. The **Full** edition also has the ready-made modules below. All of them only
+read, except *Set default calendar permission*, which supports a dry run.
 
-| Module | Category | What it does |
-|---|---|---|
-| Toolkit self-test | Toolkit | Generates dummy results without touching a tenant, to check the GUI, dry run, cancel and CSV export |
-| `_Template` | - | The blank module that *+ Add module* and `New-ToolkitModule.ps1` start from |
+| Module | Category | What it does | Core | Full |
+|---|---|---|---|---|
+| Toolkit self-test | Toolkit | Generates dummy results without touching a tenant, to check the GUI, dry run, cancel and CSV export | Yes | Yes |
+| `_Template` | - | The blank module that *+ Add module* and `New-ToolkitModule.ps1` start from | Yes | Yes |
+| Get passkey registration status | Custom | Which licensed or role-holding users have registered a passkey (FIDO2) | - | Yes |
+| Dynamic groups using memberOf | Entra ID | Dynamic groups whose rule uses `memberOf`, so they can be rewritten before the attribute is retired | - | Yes |
+| Licensed users with privileged roles | Entra ID | Licensed users holding Entra ID roles, including PIM eligible and group-based assignments | - | Yes |
+| Nested group membership | Entra ID | Every group that is a member of another group, direct or inherited | - | Yes |
+| Primary MFA method per user | Entra ID | Which MFA method each user is prompted with first, and how strong it is | - | Yes |
+| SMS/Voice MFA retirement check | Entra ID | SMS/Voice method policy, migration and campaign state ahead of the retirement | - | Yes |
+| Stale guest accounts report | Entra ID | Guests without a sign-in in the chosen number of days, or that never redeemed | - | Yes |
+| Set default calendar permission | Exchange Online | Sets the Default or Anonymous permission on mailbox calendars (dry run first) | - | Yes |
+| Shared mailbox report | Exchange Online | Shared mailboxes with Sent Items settings and effective permission counts | - | Yes |
+| Intune PC inventory | Intune | Intune managed devices with serial number, model, primary user and dates | - | Yes |
 
-To share a module after all, add it to the exceptions in `.gitignore` (`!Modules/<Id>/`).
+**Which modules ship.** `.gitignore` decides: a module ships (in Full) only if it is listed there as an
+exception (`!Modules/<Id>/`). A new module you create stays private on your PC until you add that line.
+Before you add one, make sure it contains no real tenant data: the release build stops if it finds an e-mail
+address or `*.onmicrosoft.com` name that isn't a placeholder such as `contoso.example`.
 
 ## Adding your own scripts
 
@@ -406,12 +430,12 @@ Only certificate authentication is supported. Client secrets are deliberately no
 
 ### Checking a download
 
-`Get-M365AdminToolkit.ps1` does all of the checks below for you. To check a download by hand instead: every
-release ZIP comes with a `M365AdminToolkit-<version>.SHA256SUMS.txt` file. Before you install, check that the
-ZIP is the one that was published:
+`Get-M365AdminToolkit.ps1` does all of the checks below for you. To check a download by hand instead: each
+release has one `M365AdminToolkit-<version>.SHA256SUMS.txt` file with a line for each edition's ZIP. Before you
+install, check that the ZIP is the one that was published:
 
 ```powershell
-(Get-FileHash .\M365AdminToolkit-1.0.0.zip -Algorithm SHA256).Hash   # must match SHA256SUMS.txt (case doesn't matter)
+(Get-FileHash .\M365AdminToolkit-1.0.0-Full.zip -Algorithm SHA256).Hash   # must match its line in SHA256SUMS.txt (case doesn't matter)
 ```
 
 If the scripts are signed, also check who signed them after extracting:
@@ -424,14 +448,17 @@ Get-AuthenticodeSignature .\M365AdminToolkit\Start-Toolkit.ps1 | Format-List Sta
 
 ### Making a release (maintainers)
 
-1. Commit everything and tag the version, using [semantic versioning](https://semver.org):
+1. Commit everything and tag the version, using [semantic versioning](https://semver.org). In **GitHub
+   Desktop**: commit, open *History*, right-click the commit, choose *Create Tag...* and enter `v1.0.0`, then
+   click *Push origin* (it pushes the tag too). Or from the command line:
 
    ```powershell
    git tag -a v1.0.0 -m "M365 Admin Toolkit 1.0.0"
    git push origin v1.0.0
    ```
 
-2. Build the release. Add `-CertificateThumbprint` to sign the scripts with a code-signing certificate:
+2. Build the release: one run builds both editions. Add `-CertificateThumbprint` to sign the scripts with a
+   code-signing certificate:
 
    ```powershell
    .\Tools\New-ToolkitRelease.ps1 -Version 1.0.0
@@ -439,15 +466,20 @@ Get-AuthenticodeSignature .\M365AdminToolkit\Start-Toolkit.ps1 | Format-List Sta
    ```
 
    The script packages exactly the tagged commit. Local changes, tests and git-ignored (private) modules are
-   never included. It signs the scripts with a timestamp, so the signatures stay valid after the certificate
-   expires. Then it zips the package and writes the SHA-256 of the final ZIP, so the checksum covers the signed
-   files. It never overwrites a version that has already been built. When signing, it also writes a signed
+   never included. From it, it builds the **Core** edition (`M365AdminToolkit-<version>.zip`, sample modules
+   only, the same file name as before the split, so older copies of `Get-M365AdminToolkit.ps1` still work) and
+   the **Full** edition (`M365AdminToolkit-<version>-Full.zip`, every committed module). Each has an `EDITION`
+   file. The build stops if a shipped file contains an e-mail address or tenant name that isn't a placeholder. It signs the scripts with a timestamp, so the signatures stay valid after the certificate
+   expires. Then it zips each edition and writes the SHA-256 of both final ZIPs into one checksum file, so the
+   checksums cover the signed files. It never overwrites a version that has already been built. When signing, it also writes a signed
    file catalog (`M365AdminToolkit.cat`) that covers the files a signature can't (XAML, JSON). It also puts a
    copy of the signed `Get-M365AdminToolkit.ps1` next to the ZIP.
 
 3. Publish it with the GitHub CLI (`gh auth login` first). This creates the release for the pushed tag as a
-   draft, uploads the ZIP, the checksum file and `Get-M365AdminToolkit.ps1`, then publishes it. It refuses an
-   existing release, a ZIP that no longer matches its checksum and an unsigned build:
+   draft, uploads both ZIPs, the checksum file and `Get-M365AdminToolkit.ps1`, then publishes it. The release
+   notes explain which edition to pick and list the Full modules from their `module.json`, so they always match
+   what ships (`-WhatIf` shows them). It refuses an existing release, a ZIP that no longer matches its checksum
+   and an unsigned build:
 
    ```powershell
    .\Tools\Publish-ToolkitRelease.ps1 -Version 1.0.0 -WhatIf   # check first

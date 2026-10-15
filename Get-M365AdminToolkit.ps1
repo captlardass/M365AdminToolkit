@@ -6,7 +6,8 @@
 
 .DESCRIPTION
     Download this script from the Releases page and run it. It:
-      1. Asks the GitHub API for the release (latest stable unless -Version or -IncludePrerelease).
+      1. Asks the GitHub API for the release (latest stable unless -Version or -IncludePrerelease),
+         and which edition to install (-Edition, or a question when it is left out).
       2. Downloads the ZIP and its SHA256SUMS.txt into a new, empty temp folder and checks the hash.
       3. Checks the Authenticode signature of every .ps1/.psm1 in the ZIP and of the file catalog
          that covers every other file. All must be Valid and signed by the same certificate that
@@ -22,6 +23,10 @@
 
 .PARAMETER Version
     Install this version (e.g. 1.2.0) instead of the latest release.
+
+.PARAMETER Edition
+    Full: the toolkit with every bundled module. Core: the toolkit with only the module template and a
+    self-test, for building your own modules. Without it you are asked (Core with -NoGui).
 
 .PARAMETER IncludePrerelease
     Take the newest release even if it is a prerelease.
@@ -52,12 +57,13 @@
     .\Get-M365AdminToolkit.ps1
 
 .EXAMPLE
-    .\Get-M365AdminToolkit.ps1 -Destination D:\Tools\M365AdminToolkit -NoGui
+    .\Get-M365AdminToolkit.ps1 -Edition Full -Destination D:\Tools\M365AdminToolkit -NoGui
 #>
 [CmdletBinding(DefaultParameterSetName = 'Download')]
 param(
     [string] $Destination,
     [Parameter(ParameterSetName = 'Download')] [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')] [string] $Version,
+    [Parameter(ParameterSetName = 'Download')] [ValidateSet('Core', 'Full')] [string] $Edition,
     [Parameter(ParameterSetName = 'Download')] [switch] $IncludePrerelease,
     [switch] $Portable,
     [switch] $DesktopShortcut,
@@ -81,7 +87,21 @@ function Test-Elevated {
     (New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Get-ToolkitRelease {
+function Select-ToolkitEdition {
+    <# Asks which edition to install. Returns 'Full', 'Core', or $null when cancelled. #>
+    Add-Type -AssemblyName PresentationFramework
+    $text = "Which edition do you want to install?`n`n" +
+        "Full - the toolkit with all ready-made modules (Entra ID, Exchange Online and Intune reports and tools). Start using it straight away.`n`n" +
+        "Core - the toolkit with only the module template and a self-test, for building your own modules.`n`n" +
+        "Yes = Full      No = Core      Cancel = stop"
+    switch ([System.Windows.MessageBox]::Show($text, $appName, 'YesNoCancel', 'Question')) {
+        'Yes' { 'Full' }
+        'No' { 'Core' }
+        default { $null }
+    }
+}
+
+function Get-ToolkitRelease([string] $Edition) {
     <# Returns the release (tag, ZIP and checksum asset URLs) to install. #>
     $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'M365AdminToolkit-Installer' }
     $release = if ($Version) { Invoke-RestMethod -Uri "$apiBase/tags/v$Version" -Headers $headers -UseBasicParsing }
@@ -95,16 +115,21 @@ function Get-ToolkitRelease {
     if ($release.tag_name -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw "Unexpected release tag '$($release.tag_name)'." }
     $found = $Matches[1]
     $name = "M365AdminToolkit-$found"
+    # Core keeps the original ZIP name; Full is <name>-Full.zip. One checksum file covers both.
+    $zipName = if ($Edition -eq 'Full') { "$name-Full.zip" } else { "$name.zip" }
     $urls = @{}
-    foreach ($file in "$name.zip", "$name.SHA256SUMS.txt") {
+    foreach ($file in $zipName, "$name.SHA256SUMS.txt") {
         $asset = @($release.assets | Where-Object name -eq $file)
-        if ($asset.Count -ne 1) { throw "Release $($release.tag_name) has no single asset named $file." }
+        if ($asset.Count -ne 1) {
+            if ($file -eq $zipName -and $Edition -eq 'Full') { throw "Release $($release.tag_name) has no Full edition ($file). Install -Edition Core, or pick a newer -Version." }
+            throw "Release $($release.tag_name) has no single asset named $file."
+        }
         $url = [string]$asset[0].browser_download_url
         # Only release downloads from this repository, over HTTPS.
         if (-not $url.StartsWith("$downloadBase$($release.tag_name)/", [StringComparison]::Ordinal)) { throw "Unexpected download URL for $file`: $url" }
         $urls[$file] = $url
     }
-    [pscustomobject]@{ Version = $found; Name = $name; ZipUrl = $urls["$name.zip"]; SumsUrl = $urls["$name.SHA256SUMS.txt"] }
+    [pscustomobject]@{ Version = $found; Name = $name; ZipName = $zipName; ZipUrl = $urls[$zipName]; SumsUrl = $urls["$name.SHA256SUMS.txt"] }
 }
 
 function Assert-Checksum([string] $Zip, [string] $Sums) {
@@ -196,13 +221,15 @@ function Install-FromRelease {
         else {
             # Windows PowerShell 5.1 may still default to TLS 1.0; GitHub needs 1.2 or later.
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-            $release = Get-ToolkitRelease
-            Write-Host "Downloading $appName $($release.Version) from github.com/$repository ..."
-            $zip = Join-Path $work "$($release.Name).zip"
+            $wanted = if ($Edition) { $Edition } elseif ($NoGui) { 'Core' } else { Select-ToolkitEdition }
+            if (-not $wanted) { Write-Host 'Setup cancelled.'; return }
+            $release = Get-ToolkitRelease -Edition $wanted
+            Write-Host "Downloading $appName $($release.Version) ($wanted edition) from github.com/$repository ..."
+            $zip = Join-Path $work $release.ZipName
             $sums = Join-Path $work "$($release.Name).SHA256SUMS.txt"
             Invoke-WebRequest -Uri $release.ZipUrl -OutFile $zip -UseBasicParsing
             Invoke-WebRequest -Uri $release.SumsUrl -OutFile $sums -UseBasicParsing
-            $label = "$appName $($release.Version)"
+            $label = "$appName $($release.Version) ($wanted edition)"
         }
 
         $hash = Assert-Checksum -Zip $zip -Sums $sums
@@ -214,6 +241,10 @@ function Install-FromRelease {
             $count = Assert-Signature -Folder $package -Signer $signer
             Write-Host "Signatures OK ($count scripts, signer $signer)."
         }
+        # EDITION is covered by the signed catalog. Releases before the Core/Full split have none (= Core).
+        $editionFile = Join-Path $package 'EDITION'
+        $packaged = if (Test-Path -LiteralPath $editionFile) { ([IO.File]::ReadAllText($editionFile)).Trim() } else { 'Core' }
+        if ($wanted -and $packaged -ne $wanted) { throw "Asked for the $wanted edition, but the package is the $packaged edition - nothing was installed." }
 
         $arguments = @{}
         if ($Destination) { $arguments.Destination = $Destination }

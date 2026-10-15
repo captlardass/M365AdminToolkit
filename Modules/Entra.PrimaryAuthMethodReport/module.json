@@ -1,0 +1,63 @@
+﻿{
+  "Id": "Entra.PrimaryAuthMethodReport",
+  "Name": "Primary MFA method per user",
+  "Category": "Entra ID",
+  "Tags": [
+    "Security",
+    "Report",
+    "Authentication"
+  ],
+  "Description": "Shows which MFA method each user is prompted with first, how strong it is (phishing-resistant, standard, SMS/voice) and what to do next. Tenant readiness = users with a phishing-resistant primary method. Read-only.",
+  "Version": "1.0.0",
+  "Author": "",
+  "EntryPoint": "module.ps1",
+  "SupportsWhatIf": false,
+  "ReadOnly": true,
+  "Requires": {
+    "ExchangeOnline": false,
+    "GraphScopes": [
+      "User.Read.All",
+      "UserAuthenticationMethod.Read.All",
+      "AuditLog.Read.All"
+    ]
+  },
+  "Parameters": [
+    {
+      "Name": "Mode",
+      "Label": "Mode",
+      "Type": "Choice",
+      "Default": "Live",
+      "Options": [
+        "Live",
+        "Report"
+      ],
+      "HelpText": "Live reads each user's methods directly. Report uses the registration report (needs Entra ID P1/P2)."
+    },
+    {
+      "Name": "Show",
+      "Label": "Show",
+      "Type": "Choice",
+      "Default": "All",
+      "Options": [
+        "All",
+        "SmsOrVoicePrimary",
+        "NotPhishingResistant"
+      ],
+      "HelpText": "Which users to return: All, SmsOrVoicePrimary or NotPhishingResistant. Users that could not be checked are always returned."
+    },
+    {
+      "Name": "IncludeGuests",
+      "Label": "Include guests",
+      "Type": "Bool",
+      "Default": false,
+      "HelpText": "Include guest (B2B) accounts. By default only member accounts are checked."
+    },
+    {
+      "Name": "IncludeDisabled",
+      "Label": "Include disabled",
+      "Type": "Bool",
+      "Default": false,
+      "HelpText": "Include disabled accounts. By default only enabled accounts are checked."
+    }
+  ]
+}
