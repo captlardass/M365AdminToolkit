@@ -127,10 +127,8 @@ input form, a results grid, CSV export and a safe dry run.
 
    The toolkit calls Graph through `Invoke-MgGraphRequest`, so the full `Microsoft.Graph` bundle is not required.
 
-5. **(Recommended) Use your own app for Graph sign-in.** With current Graph modules, sign-in through
-   Microsoft's default app can fail in the toolkit. See
-   [Interactive sign-in with your own app](#interactive-sign-in-with-your-own-app-recommended).
-   For unattended use, see [App-only sign-in](#app-only-sign-in-optional).
+5. **(Optional) Set up app-only sign-in.** See [App-only sign-in](#app-only-sign-in-optional). You don't need
+   an app registration to sign in as yourself.
 
 ## Running the toolkit
 
@@ -199,9 +197,8 @@ sleep and closing the toolkit always end a session and can't be switched off.
 (`-ContextScope Process`), so no token is written to disk. Sign-in also bypasses WAM, the Windows sign-in
 broker. WAM silently reuses an account's tokens even after a restart, so without it the browser asks which
 account to use every time. Your own Graph WAM setting is put back straight after sign-in. Newer
-`Microsoft.Graph.Authentication` versions only let WAM be bypassed when you sign in through your own app
-registration. With Microsoft's default app they always use WAM, and that can fail from the toolkit (see
-[Interactive sign-in with your own app](#interactive-sign-in-with-your-own-app-recommended)). Graph and Exchange
+`Microsoft.Graph.Authentication` versions ignore that setting with Microsoft's default app and always use WAM
+(see [Graph sign-in with a code](#graph-sign-in-with-a-code)). Graph and Exchange
 keep connections for the whole PowerShell process, so a connection the toolkit didn't make in this launch
 is ended before use. That includes one from an earlier launch in the same PowerShell window or from a
 `Connect-MgGraph` you ran yourself.
@@ -434,16 +431,33 @@ this session. It is hidden for modules that haven't reported a figure, and the i
 
 The self-test module shows a working example with dummy data.
 
-## Interactive sign-in with your own app (recommended)
+## Graph sign-in with a code
 
 Newer versions of `Microsoft.Graph.Authentication` always sign in through WAM (the Windows sign-in broker)
-when they use Microsoft's default app. `Set-MgGraphOption -DisableLoginByWAM` only works with your own app.
-In the toolkit, WAM sign-in can fail straight away with an empty
-*InteractiveBrowserCredential authentication failed:* error. Even when WAM works, it silently reuses an account
-instead of asking which one to use.
+when they use Microsoft's default app: `Set-MgGraphOption -DisableLoginByWAM` only works with your own app
+registration. On some PCs WAM sign-in fails straight away with an empty
+*InteractiveBrowserCredential authentication failed:* error.
 
-Signing in through your own app registration avoids both problems. You still sign in as yourself, with your own
-permissions, in a normal browser window:
+When that happens, the toolkit switches to **sign-in with a code** (the device code flow) by itself. No app
+registration or setting is needed:
+
+1. Your browser opens Microsoft's sign-in page (`https://login.microsoft.com/device`), and the code is copied
+   to the clipboard. The code is also shown in the *Log* tab.
+2. Paste the code, then pick the admin account and sign in as usual, including MFA.
+3. Return to the toolkit: the run carries on. The code is valid for about 15 minutes. Click **Cancel** to give up.
+
+Only use a code that the toolkit has just shown you. Never enter a code that someone sent you: that's a
+known phishing trick. The [session rules](#sign-in-sessions-and-tenants) still apply: the token stays in
+memory, and the session is pinned to the tenant you sign in to.
+
+Some organisations block sign-in with a code using Conditional Access. If yours does, the toolkit says so,
+and you can use your own app (below) instead.
+
+### Interactive sign-in with your own app (optional)
+
+If you'd rather not use codes, or your organisation blocks them, sign in through your own app registration.
+WAM can then be skipped, and you get a normal browser window with an account picker. You still sign in as
+yourself, with your own permissions:
 
 1. In Microsoft Entra ID, go to *App registrations > New registration*. Pick *Accounts in any organizational
    directory (multitenant)* if you'll use it in several tenants, or *single tenant* for one.
@@ -582,7 +596,8 @@ directly.
 | Problem | Fix |
 |---|---|
 | *Scripts are blocked* / *not digitally signed* | Run `Unblock-File` on the folder, or use the signed release (see [Installation](#installation)) |
-| Graph sign-in fails at once: *InteractiveBrowserCredential authentication failed:* after a WAM note | Newer Graph modules force WAM with Microsoft's default app. Set `Graph.ClientId` to your own app (see [Interactive sign-in with your own app](#interactive-sign-in-with-your-own-app-recommended)) |
+| *InteractiveBrowserCredential authentication failed:* after a WAM note, then a sign-in code | Expected on PCs where Windows sign-in (WAM) fails. Enter the code in the browser page that opens (see [Graph sign-in with a code](#graph-sign-in-with-a-code)) |
+| *Graph sign-in with a code failed* | Your organisation probably blocks the device code flow. Use [your own app](#interactive-sign-in-with-your-own-app-optional) |
 | Graph and Exchange together fail with an assembly or MSAL error | Known conflict between the two modules in Windows PowerShell 5.1. Connect to Exchange first, or run under PowerShell 7. Also check *Settings > Installed PowerShell modules* for Graph version mismatches |
 | A module shows in red | Select it to see the problems, or run `.\Tools\Test-ToolkitModules.ps1` |
 | A run finishes with 0 results and an error | Check the *Log* tab. The error is from the module script |

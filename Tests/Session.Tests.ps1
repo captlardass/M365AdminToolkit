@@ -16,9 +16,13 @@ $script:Wam = $false
 function Get-MgContext { $script:Context }
 function Connect-MgGraph {
     [CmdletBinding()]
-    param([string[]] $Scopes, [string] $TenantId, [string] $ClientId, [string] $CertificateThumbprint, [string] $ContextScope, [switch] $NoWelcome)
-    $global:FakeGraphConnects.Add([pscustomobject]@{ Scopes = $Scopes; ContextScope = $ContextScope; WamDisabled = $script:Wam; ClientId = $ClientId })
-    if ($env:FAKE_CONNECT_FAIL) { throw 'InteractiveBrowserCredential authentication failed: ' }
+    param([string[]] $Scopes, [string] $TenantId, [string] $ClientId, [string] $CertificateThumbprint, [string] $ContextScope, [switch] $NoWelcome, [switch] $UseDeviceCode)
+    $global:FakeGraphConnects.Add([pscustomobject]@{ Scopes = $Scopes; ContextScope = $ContextScope; WamDisabled = $script:Wam; ClientId = $ClientId; DeviceCode = [bool]$UseDeviceCode })
+    if ($UseDeviceCode) {
+        'To sign in, use a web browser to open the page ' + $env:FAKE_DEVICE_URL + ' and enter the code FAKE12345 to authenticate.'
+        if ($env:FAKE_DEVICE_FAIL) { throw 'AADSTS50199: device code flow is blocked by policy' }
+    }
+    elseif ($env:FAKE_CONNECT_FAIL) { throw ('InteractiveBrowserCredential authentication failed: ' + $env:FAKE_CONNECT_FAIL) }
     $script:Context = [pscustomobject]@{ TenantId = $env:FAKE_GRAPH_TENANT; Scopes = $Scopes; Account = 'admin@contoso.example'
         AuthType = $(if ($CertificateThumbprint) { 'AppOnly' } else { 'Delegated' }); AppName = 'Contoso app' }
 }
@@ -53,14 +57,20 @@ $env:FAKE_EXO_TENANT = $tenantA
 $env:FAKE_ORG_NAME = 'Contoso Example'
 $env:FAKE_STUCK = ''
 $env:FAKE_CONNECT_FAIL = ''
+$env:FAKE_DEVICE_FAIL = ''
+$env:FAKE_DEVICE_URL = 'https://login.microsoft.com/device'
 
 $global:TkSettings = $null
 . "$Root\Core\Toolkit.Worker.ps1"
+# Never open a browser or touch the clipboard from a test: record the call instead.
+$global:FakeDeviceLogins = New-Object System.Collections.Generic.List[object]
+function Open-TkDeviceLogin { param([string] $Url, [string] $Code) $global:FakeDeviceLogins.Add([pscustomobject]@{ Url = $Url; Code = $Code }) }
 $global:InformationPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 
 function Reset-Fakes {
     $env:FAKE_GRAPH_TENANT = $tenantA; $env:FAKE_EXO_TENANT = $tenantA; $env:FAKE_ORG_NAME = 'Contoso Example'; $env:FAKE_STUCK = ''; $env:FAKE_CONNECT_FAIL = ''
+    $env:FAKE_DEVICE_FAIL = ''; $env:FAKE_DEVICE_URL = 'https://login.microsoft.com/device'; $global:FakeDeviceLogins.Clear()
     $global:TkSettings = $null
     try { Disconnect-TkAll } catch { }
     $global:TkSignOutReason = ''
@@ -223,11 +233,38 @@ try {
     Check '...and pinned to the signed-in tenant' ($global:TkSession.TenantId -eq $tenantA) ''
 
     Reset-Fakes
-    $env:FAKE_CONNECT_FAIL = '1'
+    $env:FAKE_CONNECT_FAIL = ' '
+    Connect-TkGraph -Scopes 'User.Read.All'
+    $c = $global:FakeGraphConnects | Select-Object -Last 1
+    Check 'When WAM sign-in fails, sign-in with a code takes over (no app needed)' ($global:FakeGraphConnects.Count -eq 2 -and $c.DeviceCode -and -not $c.ClientId -and (Test-TkGraphConnected)) ($global:FakeGraphConnects | ConvertTo-Json -Compress)
+    Check '...with the same scopes and an in-memory token cache' ($c.ContextScope -eq 'Process' -and $c.Scopes -contains 'User.Read.All') ($c | ConvertTo-Json -Compress)
+    Check '...opening the device page with the code' ($global:FakeDeviceLogins.Count -eq 1 -and $global:FakeDeviceLogins[0].Url -eq 'https://login.microsoft.com/device' -and $global:FakeDeviceLogins[0].Code -eq 'FAKE12345') ($global:FakeDeviceLogins | ConvertTo-Json -Compress)
+    Check '...still pinned to the signed-in tenant' ($global:TkSession.TenantId -eq $tenantA) ''
+    Check "...and the user's own WAM setting is put back" ((Get-MgGraphOption).DisableLoginByWAM -eq $false) ''
+
+    Reset-Fakes
+    $env:FAKE_CONNECT_FAIL = ' '
+    $env:FAKE_DEVICE_URL = 'https://contoso.example/device'
+    Connect-TkGraph
+    Check 'A sign-in page that is not Microsoft''s is never opened' ($global:FakeDeviceLogins.Count -eq 0) ($global:FakeDeviceLogins | ConvertTo-Json -Compress)
+
+    Reset-Fakes
+    $env:FAKE_CONNECT_FAIL = 'User canceled authentication'
     $err = Get-Error { Connect-TkGraph }
-    Check 'A failed sign-in with the default app explains the ClientId fix' ($err -match 'Graph.ClientId' -and -not (Test-TkGraphConnected) -and -not $global:TkSession) $err
+    Check 'A cancelled sign-in is not retried with a code' ($err -match 'cancel' -and $global:FakeGraphConnects.Count -eq 1 -and -not $global:TkSession) $err
+
+    Reset-Fakes
+    $env:FAKE_CONNECT_FAIL = ' '
+    $env:FAKE_DEVICE_FAIL = '1'
+    $err = Get-Error { Connect-TkGraph }
+    Check 'If sign-in with a code is blocked too, the error says what to do' ($err -match 'device code' -and -not (Test-TkGraphConnected) -and -not $global:TkSession) $err
     Check "...and the user's own WAM setting is still put back" ((Get-MgGraphOption).DisableLoginByWAM -eq $false) ''
-    $env:FAKE_CONNECT_FAIL = ''
+
+    Reset-Fakes
+    $global:TkSettings = [pscustomobject]@{ Graph = [pscustomobject]@{ ClientId = '22222222-2222-2222-2222-222222222222' } }
+    $env:FAKE_CONNECT_FAIL = ' '
+    $err = Get-Error { Connect-TkGraph }
+    Check 'With an own app, a failed browser sign-in is reported as is' ($err -match 'InteractiveBrowserCredential' -and $global:FakeGraphConnects.Count -eq 1) $err
 
     Reset-Fakes
     Connect-TkGraph

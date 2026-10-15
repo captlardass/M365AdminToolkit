@@ -268,18 +268,61 @@ function Connect-TkGraph {
         $restoreWam = $wamOption -and -not (Get-MgGraphOption).DisableLoginByWAM
         if ($restoreWam) { Set-MgGraphOption -DisableLoginByWAM $true | Out-Null }
         Write-Information ("Connecting to Microsoft Graph (scopes: {0})..." -f ($allScopes -join ', '))
-        try { Connect-MgGraph @connect }
-        catch {
-            if (-not $connect.ClientId -and $_.Exception.Message -match 'InteractiveBrowserCredential') {
-                throw ("Graph sign-in failed: {0} Newer Microsoft.Graph.Authentication versions always sign in through WAM " +
-                    "with the default app, and WAM can fail from the toolkit. Set Graph.ClientId in Config\settings.json " +
-                    "to your own app registration (README: 'Interactive sign-in with your own app').") -f $_.Exception.Message
+        try {
+            try { Connect-MgGraph @connect }
+            catch {
+                # WAM can fail outright on some PCs (an empty InteractiveBrowserCredential error). Sign-in with a
+                # code needs neither the broker nor an app registration. A cancelled sign-in stays cancelled.
+                $message = $_.Exception.Message
+                if ($connect.ClientId -or $message -notmatch 'InteractiveBrowserCredential' -or $message -match 'cancel') { throw }
+                Write-Warning "Windows sign-in (WAM) failed: $($message.Trim()) Switching to sign-in with a code."
+                Connect-TkGraphDeviceCode -Connect $connect
             }
-            throw
         }
         finally { if ($restoreWam) { Set-MgGraphOption -DisableLoginByWAM $false | Out-Null } }
     }
     Register-TkSignIn -Service Graph
+}
+
+function Connect-TkGraphDeviceCode {
+    <#
+    .SYNOPSIS
+        Delegated Graph sign-in with a code (device code flow): no WAM, no app registration. Graph writes
+        "open <page> and enter the code <code>" to the pipeline while it waits; that is logged, the page is
+        opened and the code copied, so the user only has to paste it and pick the account.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [hashtable] $Connect)
+
+    $deviceConnect = $Connect.Clone()
+    $deviceConnect.UseDeviceCode = $true
+    $shown = $false
+    try {
+        Connect-MgGraph @deviceConnect | ForEach-Object {
+            $text = [string]$_
+            Write-Warning $text
+            if ($shown -or $text -notmatch '(https://\S+?)\.?\s.*\bcode\s+([A-Z0-9]{6,12})\b') { return }
+            $shown = $true
+            # Only Microsoft's own device sign-in pages are opened; anything else is just logged.
+            $url = $Matches[1]
+            $code = $Matches[2]
+            if ($url -match '^https://(login\.microsoft\.com/device|microsoft\.com/devicelogin|aka\.ms/devicelogin)$') {
+                Open-TkDeviceLogin -Url $url -Code $code
+                Write-Warning "The sign-in page is open in your browser and the code $code is on the clipboard: paste it there, then pick the admin account."
+            }
+        }
+    }
+    catch {
+        throw ("Graph sign-in with a code failed: {0} If your organisation blocks sign-in with a code (device code flow), " +
+            "use your own app registration instead (README: 'Graph sign-in with a code').") -f $_.Exception.Message
+    }
+}
+
+function Open-TkDeviceLogin {
+    <# Opens the device sign-in page and puts the code on the clipboard. Kept separate so tests can replace it. #>
+    param([Parameter(Mandatory)] [string] $Url, [Parameter(Mandatory)] [string] $Code)
+    try { Set-Clipboard -Value $Code } catch { Write-Warning "Could not copy the code to the clipboard: $($_.Exception.Message)" }
+    try { Start-Process -FilePath $Url } catch { Write-Warning "Could not open the browser: $($_.Exception.Message)" }
 }
 
 function Connect-TkExchange {
