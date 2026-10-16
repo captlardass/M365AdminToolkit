@@ -19,6 +19,10 @@ Read README.md for the architecture and the module contract.
   every connect goes through Confirm-TkSession + Register-TkSignIn (tenant pinning), Graph uses
   `-ContextScope Process` and bypasses WAM. Keep it failing closed and rerun Tests/Session.Tests.ps1.
 - Don't call commands via `& (Get-Command X)` in modules: it bypasses the dry-run guard.
+- Other languages (`"Runtime"`: Cmd, Bash, Zsh, Python) run as a child process the guard can't see: they are always unguarded and confirmed, can never be `ReadOnly` or use `Requires` (Graph/EXO), and only get a dry run through their own `DryRunArgument`. Keep that failing closed (Test-TkManifest and Invoke-TkModule both refuse) and rerun Tests/Runtime.Tests.ps1.
+- Add a language only through `$script:TkRuntimes` in Toolkit.Core.psm1 (+ a `Core/Templates/<Runtime>.<ext>`), and keep `.gitattributes` eol rules in sync (LF for Unix scripts, CRLF for cmd).
+- cmd modules get input values only through `TK_PARAM_*` environment variables, never on the command line (cmd would execute `& | ^`). Don't change that.
+- Export (`Export-TkModule`) must keep failing closed on tenant data and never include `*.csv`/`*.log` results, `Config/`, `Logs/` or preferences; rerun Tests/ScriptExport.Tests.ps1. `Find-TkTenantData` is shared with the release gate - don't loosen it.
 - Tags: reuse existing tags before inventing new ones; short, no commas.
 - Prefer `Invoke-MgGraphRequest` over Microsoft.Graph.* sub-modules so only Microsoft.Graph.Authentication is needed.
 - Log with Write-Information/Write-Warning; never Read-Host or other prompts.

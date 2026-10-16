@@ -1,11 +1,16 @@
 # Admin Toolkit
 
-A desktop GUI for Microsoft 365 administrators who want **one place to run their PowerShell scripts**,
-without a console, without remembering parameters and without worrying about pressing Enter too early.
+A desktop GUI for administrators who want **one place to keep and run their scripts**: Microsoft 365
+PowerShell modules, and local scripts in cmd, PowerShell, bash, zsh or Python. No console, no remembering
+parameters, no worrying about pressing Enter too early.
 
 Most admins collect a folder of useful scripts over the years: reports, clean-ups, bulk changes and fixes for
 things the admin centers don't expose. The toolkit turns each of those scripts into a **module** with its own
-input form, a results grid, CSV export and a safe dry run.
+input form, a results grid and CSV export. Microsoft 365 modules get a safe dry run, and any script can be
+**exported to a USB stick** to run on a client machine.
+
+*Admin Toolkit used to be called M365 Admin Toolkit. Installing it moves an existing install over;
+see [Installation](#installation).*
 
 ## Why use it
 
@@ -23,8 +28,14 @@ input form, a results grid, CSV export and a safe dry run.
   describe their own changes. For scripts that don't, the toolkit blocks every Microsoft 365 write and lists
   it in the *Blocked changes* tab, so you can see what *would* have happened. Modules marked read-only
   are never allowed to change anything.
-- **Easy to find.** Search by name, category, tag or description. Group by category, tag or name, and star
-  favourites.
+- **Any script language.** Besides PowerShell, a module can be a `.cmd`/`.bat`, `.sh`, `.zsh` or `.py`
+  script. It gets the same form, log and results grid. bash and zsh run through WSL. See
+  [Scripts in other languages](#scripts-in-other-languages).
+- **Take scripts with you.** **Export...** copies modules to a folder or a `.tar.gz` on a USB stick, with a
+  README per script and a checksum file, ready to run on a Windows, Linux or macOS client. See
+  [Exporting to a USB stick](#exporting-to-a-usb-stick).
+- **Easy to find.** Search by name, category, tag, language or description. Group by category, tag, name or
+  language, and star favourites.
 - **Results you can use.** Output lands in a sortable grid, opens as an Excel table, or exports to CSV in one
   click.
 - **Tenant readiness.** Modules that can measure a security-posture factor (e.g. how many users have a
@@ -45,6 +56,10 @@ input form, a results grid, CSV export and a safe dry run.
 
 - An admin account with the right roles for the modules you run. Each module shows the Graph scopes it
   needs, and you consent to them the first time.
+- For scripts in other languages, an interpreter. cmd is built in. bash and zsh need
+  [WSL](https://learn.microsoft.com/windows/wsl/install) with a Linux distribution (`wsl --install`; zsh must be
+  installed inside it), or Git for Windows for bash. Python needs the Python launcher (`py`) or `python.exe`.
+  Without the interpreter a module is *export only*: you can read and export it, not run it.
 
 ## Installation
 
@@ -279,9 +294,10 @@ address or `*.onmicrosoft.com` name that isn't a placeholder such as `contoso.ex
 
 ### From the GUI
 
-Click **+ Add module**, pick your `.ps1` file (or start from the blank template) and review what the toolkit
-detected: name, category, inputs, Graph scopes, Exchange Online and read-only. Save, and the module appears
-in the list straight away.
+Click **+ Add module**, pick your script (or start from a blank template in the language you choose) and
+review what the toolkit detected: name, category, inputs, Graph scopes, Exchange Online and read-only. Save,
+and the module appears in the list straight away. Scripts in other languages than PowerShell are covered in
+[Scripts in other languages](#scripts-in-other-languages).
 
 ### From the command line
 
@@ -323,6 +339,101 @@ crash the app.
 - **Keep scripts ASCII-only**, or save them as UTF-8 *with* BOM. Windows PowerShell 5.1 reads files without a
   BOM as ANSI.
 
+## Scripts in other languages
+
+A module can also be a cmd, bash, zsh or Python script. Add it the same way: **+ Add module**, pick the file
+(or choose a language for a blank template), or `New-ToolkitModule.ps1 -FromScript disk-usage.sh` /
+`-Runtime Bash`. The file type decides the language, and `module.json` records it as `"Runtime"`.
+
+| Runtime | Files | Runs with (first one found) | Inputs arrive as |
+|---|---|---|---|
+| `PowerShell` (default) | `.ps1` | the toolkit itself, under the change guard | parameters |
+| `Cmd` | `.cmd`, `.bat` | `cmd.exe` | environment variables only |
+| `Bash` | `.sh` | WSL, then Git Bash | `--Name value` and environment variables |
+| `Zsh` | `.zsh` | WSL | `--Name value` and environment variables |
+| `Python` | `.py` | `py -3`, then `python.exe` | `--Name value` and environment variables |
+
+Use another interpreter with `Runtimes.<Name>.Path` (and `Arguments`) in `Config\settings.json`. See
+`Config\settings.example.json`. A path set there is the only one used: when it doesn't exist, the module is
+export only, rather than silently running something else.
+
+**Inputs.** There is no `param()` block, so a script declares its form in header comments. Use `#` for bash, zsh
+and Python, and `REM` or `::` for cmd:
+
+```bash
+#!/usr/bin/env bash
+# tk-description: Lists the largest folders under a path
+# tk-param: Path | String | Required | Folder to scan
+# tk-param: Top | Int | | How many folders to list
+# tk-param: Mode | Choice(fast/full) | | How deep to look
+# tk-dryrun: --dry-run
+# tk-platforms: Linux, macOS
+```
+
+Each input reaches the script as `--Path /var/log` (a List repeats `--Name` for each value, a Bool is a bare
+`--Name` when ticked) and as the environment variable `TK_PARAM_PATH` (a List is one value per line).
+`TK_DRYRUN` is `1` on a dry run. Every value arrives as exactly one argument, whatever quotes or spaces it
+contains. cmd gets values **only** through the environment, because `cmd.exe` would run `&`, `|` or `^` in an
+argument as commands. Read them with delayed expansion, as `!TK_PARAM_PATH!`, never as an unquoted
+`%TK_PARAM_PATH%`. The blank templates in `Core\Templates` show all of this.
+
+**Output.** Each line the script prints is a log line, except:
+
+| Line | Becomes |
+|---|---|
+| `##tk:row {"Name":"web01","Free":12}` | a row in the results grid (a JSON array gives several rows) |
+| `##tk:readiness {"Ready":3,"Total":4,"Label":"hosts are patched","NotEvaluated":0}` | the [readiness](#tenant-readiness) figure |
+| anything on stderr | a warning |
+
+A non-zero exit code fails the run, and **Cancel** ends the script and everything it started. The script
+runs in its own module folder with no console: it can't prompt (`read`, `input()`, `pause`, `sudo`
+passwords), and anything it tries to read gets end-of-file.
+
+**Safety: these scripts are unguarded.** The change guard only sees PowerShell, so it can't tell what another
+process does. The toolkit fails closed:
+
+- A non-PowerShell module **can't be `ReadOnly`** and **can't use the toolkit's Microsoft 365 sign-in**
+  (`Requires`). Either makes it invalid, because the toolkit can't enforce them.
+- **Every run asks first**, names the interpreter and says the script runs with your rights.
+- **A dry run only exists if the script has its own dry-run switch.** Declare it as `"DryRunArgument"` (with
+  `"SupportsWhatIf": true`), or `# tk-dryrun:` when you add the module. The toolkit passes the switch and sets
+  `TK_DRYRUN=1`, but it can't check that the script honours it, and the screen says so.
+
+## Exporting to a USB stick
+
+**Export...** (next to *+ Add module*) copies modules to a folder or a `.tar.gz`, to run on a machine without the
+toolkit. The module you have selected starts ticked, and *All shown* ticks everything the search and tag
+filter show. Plugged-in USB drives are offered as the destination.
+
+```
+AdminToolkit-export-20261016-1030\        (or AdminToolkit-export-20261016-1030.tar.gz)
+  README.txt                <- what's in it
+  SHA256SUMS.txt            <- sha256sum -c SHA256SUMS.txt
+  Local.DiskUsage\
+    module.sh  module.json  README.txt   <- the README says how to run it on its own
+```
+
+- **Pick `.tar.gz` for Linux and macOS.** FAT and exFAT USB sticks can't store the executable bit, so a
+  plain folder needs `chmod +x module.sh` on the target. The archive keeps it (0755): `tar -xzf <file>`, then
+  `./Local.DiskUsage/module.sh --Path /var/log`.
+- **Scripts get the line endings their language needs**: LF and no BOM for bash, zsh and Python (a CRLF or
+  BOM breaks them on Linux), CRLF for cmd. The copy in the toolkit isn't changed.
+- **Nothing private goes along.** Result files a script left in its folder (`*.csv`, `*.log`, `*.xlsx`,
+  `*.tmp`) stay behind, and so do the toolkit's settings, logs and preferences. If a file contains what looks
+  like a real e-mail address or `*.onmicrosoft.com` tenant, the export stops and shows the lines. You can
+  then fix them or export anyway. The check uses the same rule as the release build.
+- An export never overwrites an earlier one. Each gets a new, dated name.
+- PowerShell modules for Microsoft 365 export too. Their README says which modules to install and how to
+  connect first, because the toolkit's sign-in isn't there.
+
+From PowerShell:
+
+```powershell
+Import-Module .\Core\Toolkit.Core.psm1
+$modules = Get-TkModule -Path .\Modules | Where-Object Runtime -eq 'Bash'
+Export-TkModule -Module $modules -Destination E:\ -Format TarGz
+```
+
 ## Module reference
 
 A module is a folder under `Modules\`, named after its Id:
@@ -363,10 +474,13 @@ Modules\
 | `Id` | yes | `Area.TaskName`, unique. Also the folder name |
 | `Name`, `Category`, `Description` | yes | Shown in the GUI. Category groups the list |
 | `Version` | yes | e.g. `1.2.0` |
-| `EntryPoint` | yes | Script file, usually `module.ps1` |
+| `EntryPoint` | yes | Script file, usually `module.ps1` (`module.sh`, `module.py`... for other languages) |
+| `Runtime` | no | `PowerShell` (default), `Cmd`, `Bash`, `Zsh` or `Python`. Must match the entry point's file type. See [Scripts in other languages](#scripts-in-other-languages) |
+| `DryRunArgument` | no | Other languages only: the script's own dry-run switch, e.g. `--dry-run`. Needs `SupportsWhatIf: true` |
+| `Platforms` | no | Where the script is meant to run: `Windows`, `Linux`, `macOS`. Shown in the header and the export README |
 | `Tags` | no | Short labels for search and grouping, without commas |
-| `SupportsWhatIf` | no | `true` requires `[CmdletBinding(SupportsShouldProcess)]` in the script |
-| `ReadOnly` | no | `true` blocks every Microsoft 365 change, on every run |
+| `SupportsWhatIf` | no | `true` requires `[CmdletBinding(SupportsShouldProcess)]` in the script (other languages: `DryRunArgument`) |
+| `ReadOnly` | no | `true` blocks every Microsoft 365 change, on every run. PowerShell only |
 | `Requires.ExchangeOnline` | no | Connect to Exchange Online before running |
 | `Requires.GraphScopes` | no | Delegated Graph scopes. A non-empty list means the toolkit connects to Graph |
 | `Parameters[]` | no | The form inputs. See below |
@@ -533,7 +647,8 @@ directly.
 | Launcher | `Start-Toolkit.ps1` | Window wiring, event handlers and GUI state |
 | Engine | `Core\Toolkit.Core.psm1` | Discovery, contract validation, form builder, job runner, result flattening, installed-modules inventory |
 | Worker | `Core\Toolkit.Worker.ps1` | Connections, change guard, runs modules. Loaded into the worker |
-| Dialogs | `Core\AddModuleDialog.ps1`, `Core\ScriptViewer.ps1` | *+ Add module* and *View script* |
+| Dialogs | `Core\AddModuleDialog.ps1`, `Core\ScriptViewer.ps1`, `Core\ExportDialog.ps1` | *+ Add module*, *View script* and *Export...* |
+| Templates | `Core\Templates\<Runtime>.<ext>` | Blank modules for cmd, bash, zsh and Python (PowerShell uses `Modules\_Template`) |
 | Layout | `Core\*.xaml` | WPF markup and styles |
 | Tools | `Tools\New-ToolkitModule.ps1`, `Tools\Test-ToolkitModules.ps1` | Create and validate modules |
 
@@ -544,6 +659,10 @@ directly.
   non-GET REST calls before they run, and reports them as blocked. Exchange Online's own REST calls for
   `Get-*` cmdlets (EXO v3 sends every classic cmdlet as a POST) are recognised as reads and let through. It can't see changes made by other
   processes or by .NET web clients. The GUI tells you when a module does something it can't guard.
+- **Other languages run as a child process.** The worker starts the interpreter from the runtime table in
+  `Toolkit.Core.psm1` (the one place to add a language), passes the inputs, and turns `##tk:` lines into rows.
+  The guard can't see into that process, so those runs are always unguarded and confirmed (see
+  [Scripts in other languages](#scripts-in-other-languages)).
 - **Privacy.** The log file in `Logs\` records which module ran and *which* inputs were supplied, never the
   values. Personal preferences such as favourites and grouping are stored in
   `%APPDATA%\AdminToolkit\preferences.json`, not in the toolkit folder.
@@ -557,3 +676,6 @@ directly.
 | A module shows in red | Select it to see the problems, or run `.\Tools\Test-ToolkitModules.ps1` |
 | A run finishes with 0 results and an error | Check the *Log* tab. The error is from the module script |
 | Strange characters in output or errors | Save the script as ASCII or UTF-8 with BOM |
+| A bash or zsh module says *export only* | No interpreter was found: install WSL and a distribution (`wsl --install`), or Git for Windows for bash, or set `Runtimes.Bash.Path` in `Config\settings.json` |
+| `$'\r': command not found` on Linux | The script has Windows line endings. Modules created by the toolkit and exports are converted to LF. For a file you copied yourself, run `sed -i 's/\r$//' script.sh` |
+| `Permission denied` running an exported `.sh` | It was copied as a plain folder (a USB stick can't keep the executable bit): `chmod +x module.sh`, or export as `.tar.gz` |
