@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Scripts for Unix shells and Python must keep LF on Windows checkouts: bash fails on CRLF.
+*.sh text eol=lf
+*.zsh text eol=lf
+*.py text eol=lf
+# cmd.exe misreads labels and GOTO in LF-only batch files.
+*.cmd text eol=crlf
+*.bat text eol=crlf

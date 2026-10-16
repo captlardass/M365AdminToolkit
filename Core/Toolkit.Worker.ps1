@@ -656,6 +656,168 @@ function Disable-TkGuard {
 
 #endregion
 
+#region Other script languages
+
+function ConvertTo-TkProcessArgument {
+    <# Quotes one argument the way CommandLineToArgvW (and the C runtime, py.exe, wsl.exe, msys bash) splits
+       it back, so a value always arrives as exactly one argument, whatever quotes or backslashes it holds.
+       .NET Framework has no ProcessStartInfo.ArgumentList to do this for us. #>
+    param([AllowEmptyString()] [string] $Value)
+    if ($Value -and $Value -notmatch '[\s"]') { return $Value }
+    $text = New-Object System.Text.StringBuilder
+    [void]$text.Append('"')
+    $backslashes = 0
+    foreach ($c in $Value.ToCharArray()) {
+        if ($c -eq [char]92) { $backslashes++; continue }
+        if ($c -eq [char]34) { [void]$text.Append([char]92, 2 * $backslashes + 1) }
+        elseif ($backslashes) { [void]$text.Append([char]92, $backslashes) }
+        [void]$text.Append($c)
+        $backslashes = 0
+    }
+    [void]$text.Append([char]92, 2 * $backslashes)
+    [void]$text.Append('"')
+    $text.ToString()
+}
+
+function Get-TkExternalInvocation {
+    <#
+        What to start for a non-PowerShell module: FileName, Arguments (one command-line string), WorkingDirectory
+        and Environment (the TK_* variables). Parameters go in as TK_PARAM_<NAME> environment variables and,
+        for ParamStyle Argv, also as --Name value (a List repeats --Name, a Bool is a bare --Name when true).
+        cmd.exe gets values only through the environment: it would treat & | ^ % on its command line as syntax.
+        The script runs by its file name from its own folder, so its path is never parsed as an argument.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $EntryPath,
+        [Parameter(Mandatory)] $Runtime,
+        [hashtable] $Parameters = @{},
+        [string] $DryRunArgument,
+        [bool] $DryRun
+    )
+    $folder = Split-Path $EntryPath -Parent
+    $leaf = Split-Path $EntryPath -Leaf
+    $environment = [ordered]@{ TK_DRYRUN = if ($DryRun) { '1' } else { '0' }; PYTHONIOENCODING = 'utf-8'; PYTHONUTF8 = '1' }
+    $argv = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @($Parameters.Keys | Sort-Object)) {
+        $value = $Parameters[$name]
+        $values = [string[]]@(if ($value -is [bool]) { if ($value) { 'true' } else { 'false' } } else { $value })
+        $environment["TK_PARAM_$($name.ToUpperInvariant())"] = $values -join "`n"
+        if ($Runtime.ParamStyle -ne 'Argv') { continue }
+        if ($value -is [bool]) { if ($value) { $argv.Add("--$name") }; continue }
+        foreach ($item in $values) { $argv.Add("--$name"); $argv.Add([string]$item) }
+    }
+    if ($DryRun -and $DryRunArgument) { $argv.Add($DryRunArgument) }
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ($Runtime.Wsl) {
+        # WSL starts in the module folder (--cd takes the Windows path) and only sees the variables WSLENV lists.
+        $parts.Add('--cd'); $parts.Add((ConvertTo-TkProcessArgument $folder))
+        $shared = @($environment.Keys | ForEach-Object { "$_/u" })
+        $environment['WSLENV'] = (@([string]$env:WSLENV | Where-Object { $_ }) + $shared) -join ':'
+    }
+    foreach ($a in $Runtime.Arguments) { $parts.Add((ConvertTo-TkProcessArgument $a)) }
+    if ($Runtime.ParamStyle -eq 'Env') {
+        # cmd /c "<line>": the outer quotes are stripped, the rest is one command. Only the file name and the
+        # validated DryRunArgument (a plain switch) are on that line - never a parameter value.
+        if ($leaf -match '[%"!^&|<>]') { throw "The script's file name '$leaf' contains characters cmd.exe would interpret." }
+        # .\ because cmd.exe doesn't search the current folder when NoDefaultCurrentDirectoryInExePath is set.
+        $line = '".\' + $leaf + '"'
+        if ($DryRun -and $DryRunArgument) { $line += " $DryRunArgument" }
+        $parts.Add('"' + $line + '"')
+    }
+    else {
+        $parts.Add((ConvertTo-TkProcessArgument $leaf))
+        foreach ($a in $argv) { $parts.Add((ConvertTo-TkProcessArgument $a)) }
+    }
+    [pscustomobject]@{ FileName = $Runtime.Interpreter; Arguments = $parts -join ' '; WorkingDirectory = $folder; Environment = $environment }
+}
+
+function Invoke-TkExternalLine {
+    <# One line a script wrote to stdout: "##tk:row {json}" is a result row, "##tk:readiness {json}" a readiness
+       figure (validated like Write-TkReadiness), anything else goes to the log. #>
+    param([string] $Line)
+    if ($Line -match '^##tk:(row|readiness)\s+(.+)$') {
+        $kind = $Matches[1]
+        try { $data = $Matches[2] | ConvertFrom-Json }
+        catch { Write-Warning "Ignored a $kind line that isn't valid JSON: $($_.Exception.Message)"; return }
+        if ($kind -eq 'row') { foreach ($item in @($data)) { $item }; return }
+        if ($null -eq $data.Ready -or $null -eq $data.Total -or -not $data.Label) {
+            Write-Warning 'Readiness not reported: ##tk:readiness needs Ready, Total and Label.'
+            return
+        }
+        $notEvaluated = if ($null -ne $data.NotEvaluated) { [int]$data.NotEvaluated } else { 0 }
+        Write-TkReadiness -Ready ([int]$data.Ready) -Total ([int]$data.Total) -Label ([string]$data.Label) -NotEvaluated $notEvaluated
+        return
+    }
+    Write-Information $Line
+}
+
+function Invoke-TkExternalScript {
+    <#
+        Runs a non-PowerShell module as a child process and streams it: stdout lines through Invoke-TkExternalLine,
+        stderr to warnings. A non-zero exit code fails the run. Cancel (pipeline stop) kills the whole process tree.
+        Nothing here is guarded - Invoke-TkModule refuses a guarded run before this is called.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $EntryPath,
+        [Parameter(Mandatory)] $Runtime,
+        [hashtable] $Parameters = @{},
+        [string] $DryRunArgument,
+        [bool] $DryRun
+    )
+    if (-not $Runtime.Available -or -not $Runtime.Interpreter) { throw "No interpreter for $($Runtime.Name) was found. $($Runtime.Reason)" }
+    $call = Get-TkExternalInvocation -EntryPath $EntryPath -Runtime $Runtime -Parameters $Parameters -DryRunArgument $DryRunArgument -DryRun $DryRun
+
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $call.FileName
+    $info.Arguments = $call.Arguments
+    $info.WorkingDirectory = $call.WorkingDirectory
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $encoding = if ($Runtime.Encoding -eq 'Oem') { [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage) } else { New-Object Text.UTF8Encoding $false }
+    $info.StandardOutputEncoding = $encoding
+    $info.StandardErrorEncoding = $encoding
+    # Never pass on values from an earlier run.
+    foreach ($key in @($info.EnvironmentVariables.Keys)) { if ($key -like 'TK_PARAM_*') { $info.EnvironmentVariables.Remove($key) } }
+    foreach ($key in $call.Environment.Keys) { $info.EnvironmentVariables[$key] = $call.Environment[$key] }
+
+    Write-Information "Running $($Runtime.Label): $(Split-Path $EntryPath -Leaf) - unguarded$(if ($DryRun) { ", dry run ($DryRunArgument)" })"
+    $process = [System.Diagnostics.Process]::Start($info)
+    try {
+        $process.StandardInput.Close()    # no prompts: a script that reads input gets end-of-file
+        $out = $process.StandardOutput.ReadLineAsync()
+        $err = $process.StandardError.ReadLineAsync()
+        while ($out -or $err) {
+            $pending = [System.Threading.Tasks.Task[]]@(@($out, $err) | Where-Object { $_ })
+            # Short waits, so Cancel (which stops between statements) gets through.
+            [void][System.Threading.Tasks.Task]::WaitAny($pending, 200)
+            if ($out -and $out.IsCompleted) {
+                $line = $out.Result
+                if ($null -eq $line) { $out = $null } else { Invoke-TkExternalLine $line; $out = $process.StandardOutput.ReadLineAsync() }
+            }
+            if ($err -and $err.IsCompleted) {
+                $line = $err.Result
+                if ($null -eq $line) { $err = $null } else { if ($line.Trim()) { Write-Warning $line.TrimEnd() }; $err = $process.StandardError.ReadLineAsync() }
+            }
+        }
+        $process.WaitForExit()
+        if ($process.ExitCode) { throw "$($Runtime.Label) exited with code $($process.ExitCode)." }
+    }
+    finally {
+        if (-not $process.HasExited) {
+            # Cancelled or failed while running: end the script and everything it started.
+            & "$env:SystemRoot\System32\taskkill.exe" /T /F /PID $process.Id 2>&1 | Out-Null
+            [void]$process.WaitForExit(5000)
+        }
+        $process.Dispose()
+    }
+}
+
+#endregion
+
 function Invoke-TkModule {
     <#
     .SYNOPSIS
@@ -666,16 +828,30 @@ function Invoke-TkModule {
         Off      - normal run.
         DryRun   - Microsoft 365 changes are blocked and reported (native WhatIf scripts also get -WhatIf).
         ReadOnly - a real run of a read-only module; any attempted change is blocked and reported.
+
+    .PARAMETER Runtime
+        Get-TkRuntimeStatus of a non-PowerShell module: the script runs as a child process the guard can't
+        see into, so only Guard Off is accepted (fail closed). -DryRun passes its -DryRunArgument instead.
     #>
     param(
         [Parameter(Mandatory)] [string] $EntryPath,
         [Parameter(Mandatory)] $Requires,
         [hashtable] $Parameters = @{},
-        [ValidateSet('Off', 'DryRun', 'ReadOnly')] [string] $Guard = 'Off'
+        [ValidateSet('Off', 'DryRun', 'ReadOnly')] [string] $Guard = 'Off',
+        $Runtime,
+        [string] $DryRunArgument,
+        [bool] $DryRun
     )
 
     # Even modules that declare no connection: the script must not pick up a stale one.
     Confirm-TkSession
+    if ($Runtime -and $Runtime.Name -ne 'PowerShell') {
+        if ($Guard -ne 'Off') { throw "A $($Runtime.Name) script can't run under the change guard ($Guard): the guard only sees PowerShell. Nothing was run." }
+        if ($Requires.GraphScopes.Count -or $Requires.ExchangeOnline) { throw "A $($Runtime.Name) script can't use the toolkit's Microsoft 365 sign-in. Nothing was run." }
+        if ($DryRun -and -not $DryRunArgument) { throw "This $($Runtime.Name) script has no dry-run switch. Nothing was run." }
+        Invoke-TkExternalScript -EntryPath $EntryPath -Runtime $Runtime -Parameters $Parameters -DryRunArgument $DryRunArgument -DryRun $DryRun
+        return
+    }
     # Connect before the guard is on, so sign-in is never mistaken for a change.
     if ($Requires.GraphScopes.Count) { Connect-TkGraph -Scopes $Requires.GraphScopes }
     if ($Requires.ExchangeOnline) { Connect-TkExchange }

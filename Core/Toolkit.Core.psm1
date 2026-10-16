@@ -19,6 +19,131 @@ $script:ReservedNames  = @('WhatIf', 'Confirm', 'Verbose', 'Debug', 'ErrorAction
 # Tenant readiness: Pass at or above Pass %, Warn at or above Warn %, otherwise Fail. module.json "Readiness" overrides.
 $script:ReadinessDefault = [pscustomobject]@{ Pass = 90; Warn = 70 }
 
+# Script languages a module can be written in (module.json "Runtime", default PowerShell). This table is the
+# one place to add a language. PowerShell runs in the worker under the change guard; every other runtime is
+# an external process the guard can't see into, so those modules are always unguarded (see Test-TkManifest).
+#   Candidates  - interpreters to try, in order: @{ Path; Arguments; Wsl; Label }. Settings "Runtimes.<Name>.Path" goes first.
+#   ParamStyle  - Argv: --Name value (plus TK_PARAM_<NAME> env vars). Env: env vars only - cmd.exe would expand
+#                 & | ^ % in arguments, so values never go on its command line.
+#   Unix        - exported with LF line endings, no BOM and the executable bit.
+$script:TkRuntimes = [ordered]@{
+    PowerShell = @{ Extensions = '.ps1'; Language = 'PowerShell'; Unix = $false; ParamStyle = 'Splat'; Encoding = 'Utf8'; Candidates = @() }
+    Cmd        = @{ Extensions = '.cmd', '.bat'; Language = 'Plain'; Unix = $false; ParamStyle = 'Env'; Encoding = 'Oem'
+                    Candidates = @(@{ Path = '%SystemRoot%\System32\cmd.exe'; Arguments = '/d', '/c'; Label = 'cmd.exe' }) }
+    Bash       = @{ Extensions = '.sh'; Language = 'Plain'; Unix = $true; ParamStyle = 'Argv'; Encoding = 'Utf8'
+                    Candidates = @(@{ Path = '%SystemRoot%\System32\wsl.exe'; Arguments = '-e', 'bash'; Wsl = $true; Label = 'bash (WSL)' },
+                                   @{ Path = '%ProgramFiles%\Git\bin\bash.exe'; Arguments = @(); Label = 'bash (Git for Windows)' }) }
+    Zsh        = @{ Extensions = '.zsh'; Language = 'Plain'; Unix = $true; ParamStyle = 'Argv'; Encoding = 'Utf8'
+                    Candidates = @(@{ Path = '%SystemRoot%\System32\wsl.exe'; Arguments = '-e', 'zsh'; Wsl = $true; Label = 'zsh (WSL)' }) }
+    Python     = @{ Extensions = '.py'; Language = 'Plain'; Unix = $true; ParamStyle = 'Argv'; Encoding = 'Utf8'
+                    Candidates = @(@{ Path = 'py.exe'; Arguments = , '-3'; Label = 'Python (py launcher)' },
+                                   @{ Path = 'python.exe'; Arguments = @(); Label = 'Python' }) }
+}
+$script:RuntimeCache = @{}
+$script:Platforms = @('Windows', 'Linux', 'macOS')
+
+#region Runtimes
+
+function Get-TkRuntimeName {
+    <# The runtime names module.json may use, in table order. #>
+    [string[]]@($script:TkRuntimes.Keys)
+}
+
+function Get-TkRuntimeDefinition {
+    <# The table entry for a runtime (case-insensitive), or $null for an unknown name. #>
+    param([string] $Name)
+    if (-not $Name) { $Name = 'PowerShell' }
+    foreach ($key in $script:TkRuntimes.Keys) {
+        if ($key -eq $Name) { return [pscustomobject]($script:TkRuntimes[$key] + @{ Name = $key }) }
+    }
+    $null
+}
+
+function Get-TkRuntimeForFile {
+    <# The runtime whose extension matches a script file, or $null. #>
+    param([Parameter(Mandatory)] [string] $Path)
+    $extension = [IO.Path]::GetExtension($Path)
+    foreach ($key in $script:TkRuntimes.Keys) {
+        if ($script:TkRuntimes[$key].Extensions -contains $extension) { return $key }
+    }
+    $null
+}
+
+function Test-TkWslDistribution {
+    <# Whether WSL has a Linux distribution for this user (read from the registry: wsl.exe itself may boot the VM). #>
+    [bool]@(Get-ChildItem -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' -ErrorAction SilentlyContinue).Count
+}
+
+function Resolve-TkInterpreterPath {
+    <# Full path of an interpreter candidate, or $null. Skips the Microsoft Store "python.exe" placeholder,
+       which opens the Store instead of running anything when Python isn't installed from it. #>
+    param([Parameter(Mandatory)] [string] $Path)
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    if ([IO.Path]::IsPathRooted($expanded)) { if (Test-Path -LiteralPath $expanded -PathType Leaf) { return $expanded }; return $null }
+    foreach ($command in @(Get-Command -Name $expanded -CommandType Application -ErrorAction SilentlyContinue)) {
+        $source = $command.Source
+        if ($source -like '*\Microsoft\WindowsApps\*') {
+            $leaf = [IO.Path]::GetFileNameWithoutExtension($source)
+            $store = @(Get-ChildItem -LiteralPath (Split-Path $source -Parent) -Directory -Filter 'PythonSoftwareFoundation.Python.*' -ErrorAction SilentlyContinue)
+            if ($leaf -like 'python*' -and -not $store.Count) { continue }
+        }
+        return $source
+    }
+    $null
+}
+
+function Get-TkRuntimeStatus {
+    <#
+    .SYNOPSIS
+        Finds the interpreter for a runtime: Available, Interpreter (full path), Arguments, Wsl, Label,
+        ParamStyle, Encoding and Reason (why it isn't available). Cached; -Refresh looks again.
+        $Settings.Runtimes.<Name>.Path (Config\settings.json) is tried first and, when set, is the only choice.
+    #>
+    param([Parameter(Mandatory)] [string] $Name, $Settings, [switch] $Refresh)
+    $definition = Get-TkRuntimeDefinition $Name
+    if (-not $definition) { throw "Unknown runtime '$Name'. Use one of: $((Get-TkRuntimeName) -join ', ')." }
+    $key = $definition.Name
+    if (-not $Refresh -and $script:RuntimeCache.ContainsKey($key)) { return $script:RuntimeCache[$key] }
+
+    $status = [pscustomobject]@{
+        Name = $key; Available = $false; Interpreter = $null; Arguments = [string[]]@(); Wsl = $false
+        Label = $key; ParamStyle = $definition.ParamStyle; Encoding = $definition.Encoding; Reason = ''
+    }
+    if ($key -eq 'PowerShell') {
+        $status.Available = $true; $status.Label = 'PowerShell (in the toolkit)'
+        $script:RuntimeCache[$key] = $status
+        return $status
+    }
+
+    $override = $null
+    if ($Settings -and $Settings.PSObject.Properties['Runtimes'] -and $Settings.Runtimes -and $Settings.Runtimes.PSObject.Properties[$key]) {
+        $override = $Settings.Runtimes.$key
+    }
+    $candidates = if ($override -and $override.Path) {
+        $path = [string]$override.Path
+        , @{ Path = $path; Arguments = [string[]]@($override.Arguments | Where-Object { $_ }); Wsl = ((Split-Path $path -Leaf) -eq 'wsl.exe'); Label = "$key ($path)" }
+    }
+    else { $definition.Candidates }
+
+    $reasons = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in $candidates) {
+        $found = Resolve-TkInterpreterPath $candidate.Path
+        if (-not $found) { $reasons.Add("$($candidate.Label): not found"); continue }
+        if ($candidate.Wsl -and -not (Test-TkWslDistribution)) { $reasons.Add("$($candidate.Label): WSL has no Linux distribution installed"); continue }
+        $status.Available = $true
+        $status.Interpreter = $found
+        $status.Arguments = [string[]]@($candidate.Arguments)
+        $status.Wsl = [bool]$candidate.Wsl
+        $status.Label = $candidate.Label
+        break
+    }
+    if (-not $status.Available) { $status.Reason = $reasons -join '; ' }
+    $script:RuntimeCache[$key] = $status
+    $status
+}
+
+#endregion
+
 #region Discovery & validation
 
 function Get-TkManifestParameter {
@@ -134,6 +259,38 @@ function Test-TkManifest {
         foreach ($problem in Test-TkReadinessThreshold $Manifest.Readiness) { $problems.Add($problem) }
     }
 
+    $runtimeName = if ($Manifest.PSObject.Properties['Runtime'] -and $Manifest.Runtime) { [string]$Manifest.Runtime } else { 'PowerShell' }
+    $runtime = Get-TkRuntimeDefinition $runtimeName
+    $external = $runtime -and $runtime.Name -ne 'PowerShell'
+    if (-not $runtime) { $problems.Add("Runtime '$runtimeName' is unknown. Use one of: $((Get-TkRuntimeName) -join ', ').") }
+    elseif ($Manifest.EntryPoint -and $runtime.Extensions -notcontains [IO.Path]::GetExtension([string]$Manifest.EntryPoint)) {
+        $problems.Add("A $($runtime.Name) entry point must end in $($runtime.Extensions -join ' or ') (found '$($Manifest.EntryPoint)').")
+    }
+    if ($Manifest.PSObject.Properties['Platforms'] -and $null -ne $Manifest.Platforms) {
+        $badPlatform = @(@($Manifest.Platforms) | Where-Object { $script:Platforms -notcontains $_ })
+        if ($badPlatform.Count) { $problems.Add("Platforms may only list $($script:Platforms -join ', ') (found: $($badPlatform -join ', ')).") }
+    }
+    $dryRunArgument = if ($Manifest.PSObject.Properties['DryRunArgument']) { [string]$Manifest.DryRunArgument } else { '' }
+    if ($external) {
+        # The change guard can't see inside another process: never promise what it can't enforce (fail closed).
+        if ($Manifest.ReadOnly -eq $true) {
+            $problems.Add("ReadOnly can't be enforced for a $($runtime.Name) script: the change guard only sees PowerShell. Remove it (the module then always asks before it runs).")
+        }
+        $requires = $Manifest.Requires
+        if ($requires -and ($requires.ExchangeOnline -eq $true -or @($requires.GraphScopes | Where-Object { $_ }).Count)) {
+            $problems.Add("A $($runtime.Name) script can't use the toolkit's Graph or Exchange Online sign-in: remove Requires, or write the module in PowerShell.")
+        }
+        if ($Manifest.SupportsWhatIf -eq $true -and -not $dryRunArgument) {
+            $problems.Add("SupportsWhatIf needs DryRunArgument for a $($runtime.Name) script: the switch the script takes for a dry run, e.g. --dry-run.")
+        }
+        if ($dryRunArgument -and $Manifest.SupportsWhatIf -ne $true) { $problems.Add('DryRunArgument needs "SupportsWhatIf": true.') }
+        # Passed on the command line (cmd: appended after the script), so only a plain switch is allowed.
+        if ($dryRunArgument -and $dryRunArgument -notmatch '^(--?|/)[A-Za-z][A-Za-z0-9-]*$') {
+            $problems.Add("DryRunArgument '$dryRunArgument' must be a plain switch such as --dry-run, -n or /dryrun.")
+        }
+    }
+    elseif ($dryRunArgument) { $problems.Add('DryRunArgument is only for non-PowerShell scripts; PowerShell scripts use SupportsShouldProcess.') }
+
     $declared = @(Get-TkManifestParameter $Manifest | ForEach-Object { ConvertTo-TkParameterDefinition $_ })
     $seen = @{}
     foreach ($p in $declared) {
@@ -149,6 +306,10 @@ function Test-TkManifest {
         if ($p.Type -eq 'Choice' -and $p.Options.Count -eq 0) {
             $problems.Add("Choice parameter '$($p.Name)' needs a non-empty Options list.")
         }
+        # Becomes --Name and the environment variable TK_PARAM_<NAME>.
+        if ($external -and $p.Name -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
+            $problems.Add("Parameter '$($p.Name)' may only use letters, digits and _ in a $($runtime.Name) module.")
+        }
     }
 
     if (-not $Manifest.EntryPoint) { return $problems.ToArray() }
@@ -157,6 +318,8 @@ function Test-TkManifest {
         $problems.Add("Entry point '$($Manifest.EntryPoint)' was not found.")
         return $problems.ToArray()
     }
+    # Other languages have no param() block to compare: module.json is the only description of the inputs.
+    if ($external -or -not $runtime) { return $problems.ToArray() }
 
     # Parse (never execute) the entry script so manifest and param() block can't drift apart.
     $tokens = $null
@@ -229,9 +392,12 @@ function Get-TkModule {
         $requires = if ($manifest) { $manifest.Requires } else { $null }
         $supportsWhatIf = [bool]($manifest -and $manifest.SupportsWhatIf -eq $true)
         $entryPath = if ($manifest -and $manifest.EntryPoint) { Join-Path $dir.FullName $manifest.EntryPoint } else { $null }
+        $runtimeName = if ($manifest -and $manifest.PSObject.Properties['Runtime'] -and $manifest.Runtime) { [string]$manifest.Runtime } else { 'PowerShell' }
+        $runtime = Get-TkRuntimeDefinition $runtimeName
+        if ($runtime) { $runtimeName = $runtime.Name }
         $dryRun = $null
         if ($problems.Count -eq 0) {
-            try { $dryRun = Get-TkDryRunProfile -Path $entryPath -SupportsWhatIf $supportsWhatIf }
+            try { $dryRun = Get-TkDryRunProfile -Path $entryPath -SupportsWhatIf $supportsWhatIf -Runtime $runtimeName }
             catch { $problems = @("Could not analyse the script: $($_.Exception.Message)") }
         }
         [pscustomobject]@{
@@ -248,6 +414,10 @@ function Get-TkModule {
             }
             SupportsWhatIf = $supportsWhatIf
             ReadOnly       = [bool]($manifest -and $manifest.ReadOnly -eq $true)
+            Runtime        = $runtimeName
+            External       = $runtimeName -ne 'PowerShell'
+            DryRunArgument = if ($manifest -and $manifest.PSObject.Properties['DryRunArgument']) { [string]$manifest.DryRunArgument } else { '' }
+            Platforms      = [string[]]@(if ($manifest -and $manifest.PSObject.Properties['Platforms']) { $manifest.Platforms | Where-Object { $_ } })
             Readiness      = if ($manifest -and $manifest.Readiness -and $problems.Count -eq 0) {
                                  [pscustomobject]@{ Pass = $manifest.Readiness.Pass; Warn = $manifest.Readiness.Warn }
                              } else { $script:ReadinessDefault }
@@ -275,10 +445,17 @@ function Get-TkDryRunProfile {
     <#
     .SYNOPSIS
         Describes how a dry run works for a script (Native = its own ShouldProcess/WhatIf,
-        Enforced = the toolkit's change guard) and lists what the guard cannot cover.
+        Enforced = the toolkit's change guard, External = another language: nothing is guarded, a dry
+        run only exists when the script takes DryRunArgument) and lists what the guard cannot cover.
         Static analysis only - the script is never run.
     #>
-    param([Parameter(Mandatory)] [string] $Path, [bool] $SupportsWhatIf)
+    param([Parameter(Mandatory)] [string] $Path, [bool] $SupportsWhatIf, [string] $Runtime = 'PowerShell')
+
+    if ($Runtime -and $Runtime -ne 'PowerShell') {
+        $caveats = @("Runs outside PowerShell ($Runtime), so nothing is guarded: it runs with your rights and can change anything you can.")
+        if ($SupportsWhatIf) { $caveats += 'The dry run is the script''s own: the toolkit only passes its dry-run switch and can''t check what it does.' }
+        return [pscustomobject]@{ Mode = 'External'; Caveats = [string[]]$caveats }
+    }
 
     $tokens = $null
     $parseErrors = $null
@@ -1941,4 +2118,5 @@ Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm
     Get-TkDryRunProfile, ConvertTo-TkCodeLine, Get-TkFileSummary,
     Get-TkModuleInventory, Get-TkGalleryVersion, Test-TkElevated, Get-TkModuleUpdatePlan, Update-TkInstalledModule,
     Get-TkModuleFolder, Get-TkModuleLocation, Uninstall-TkInstalledModule,
-    Get-TkSessionLimit, Test-TkSessionLimit, Save-TkSessionLimit, ConvertTo-TkExcelData, Open-TkExcelTable
+    Get-TkSessionLimit, Test-TkSessionLimit, Save-TkSessionLimit, ConvertTo-TkExcelData, Open-TkExcelTable,
+    Get-TkRuntimeName, Get-TkRuntimeDefinition, Get-TkRuntimeForFile, Get-TkRuntimeStatus
