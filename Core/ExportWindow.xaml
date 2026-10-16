@@ -1,0 +1,52 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Export scripts" Width="720" Height="680" MinWidth="560" MinHeight="480"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="CanResizeWithGrip"
+        Background="{DynamicResource Tk.WindowBackground}" Foreground="{DynamicResource Tk.Text}" FontFamily="Segoe UI" FontSize="13">
+    <DockPanel Margin="14">
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <Button x:Name="CancelExportButton" DockPanel.Dock="Right" Content="Cancel" IsCancel="True"/>
+            <Button x:Name="ExportButton" DockPanel.Dock="Right" Content="Export" Style="{StaticResource Primary}"/>
+            <TextBlock x:Name="ExportStatus" Foreground="{DynamicResource Tk.Error}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+        </DockPanel>
+
+        <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="2. Format" Style="{StaticResource SectionTitle}"/>
+                    <ComboBox x:Name="FormatBox" Width="360" HorizontalAlignment="Left" Margin="0,4,0,0" AutomationProperties.Name="Format">
+                        <ComboBoxItem Content=".tar.gz archive - keeps the executable bit (Linux, macOS)" Tag="TarGz"/>
+                        <ComboBoxItem Content="Folder - plain files (Windows, or any USB stick)" Tag="Folder"/>
+                    </ComboBox>
+                    <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                               Text="A USB stick (FAT/exFAT) can't store the executable bit, so a copied .sh needs 'chmod +x' on the target. The .tar.gz keeps it: unpack with 'tar -xzf' and run."/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                <StackPanel>
+                    <TextBlock Text="3. Destination" Style="{StaticResource SectionTitle}"/>
+                    <DockPanel Margin="0,4,0,0">
+                        <Button x:Name="BrowseDestinationButton" DockPanel.Dock="Right" Content="Browse..."/>
+                        <TextBox x:Name="DestinationBox" Padding="4,3" AutomationProperties.Name="Destination folder"/>
+                    </DockPanel>
+                    <TextBlock x:Name="DrivesHint" Style="{StaticResource Hint}" Margin="0,6,0,2" Text="USB drives:"/>
+                    <WrapPanel x:Name="DrivePanel"/>
+                    <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                               Text="A new AdminToolkit-export-&lt;date&gt; folder or archive is created there; nothing is overwritten. Result files (*.csv, *.log) and your settings are never exported."/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <Border Style="{StaticResource Card}">
+            <DockPanel>
+                <DockPanel DockPanel.Dock="Top">
+                    <Button x:Name="SelectNoneButton" DockPanel.Dock="Right" Content="None" Style="{StaticResource LinkButton}"/>
+                    <Button x:Name="SelectAllButton" DockPanel.Dock="Right" Content="All shown" Style="{StaticResource LinkButton}" Margin="0,0,8,0"/>
+                    <TextBlock Text="1. Modules" Style="{StaticResource SectionTitle}"/>
+                </DockPanel>
+                <TextBlock DockPanel.Dock="Top" x:Name="SelectionSummary" Style="{StaticResource Hint}" Margin="0,0,0,6"/>
+                <ListBox x:Name="ModuleList" MinHeight="120" AutomationProperties.Name="Modules to export"/>
+            </DockPanel>
+        </Border>
+    </DockPanel>
+</Window>

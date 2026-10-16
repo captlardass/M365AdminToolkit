@@ -67,7 +67,7 @@ try {
     $main.ReadinessRing.SetResourceReference([System.Windows.Shapes.Shape]::StrokeProperty, 'Tk.ReadinessWarn')
     $main.ReadinessBig.Text = '73%'; $main.ReadinessSmall.Text = 'WARN'
     $main.ReadinessLabel.Text = '146 of 200 users have a passkey'; $main.ReadinessNotEvaluated.Text = '3 not evaluated'
-    $windows = @($main.Window, (Import-TkXaml -Path "$Root\Core\AddModuleWindow.xaml").Window, (Import-TkXaml -Path "$Root\Core\ScriptViewerWindow.xaml").Window)
+    $windows = @($main.Window, (Import-TkXaml -Path "$Root\Core\AddModuleWindow.xaml").Window, (Import-TkXaml -Path "$Root\Core\ScriptViewerWindow.xaml").Window, (Import-TkXaml -Path "$Root\Core\ExportWindow.xaml").Window)
 
     foreach ($theme in 'Dark', 'Light', 'Dark') {
         Set-TkTheme -Theme $theme

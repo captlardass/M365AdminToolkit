@@ -1082,6 +1082,258 @@ function Set-TkModuleTag {
 
 #endregion
 
+#region Export to a folder or USB stick
+
+# Placeholder domains that may appear in shipped or exported files. Shared with the release build's
+# tenant-data gate (Tools\New-ToolkitRelease.ps1), so both apply the same rule.
+$script:PlaceholderDomain = '(^|\.)(contoso\.example|example\.(com|net|org)|[a-z0-9-]+\.(example|invalid|test|localhost))$'
+# Files a script may have written into its own folder (it runs there): results can name people, so they stay behind.
+$script:ExportLeftOut = '*.log', '*.csv', '*.xlsx', '*.xls', '*.tmp'
+
+function Find-TkTenantData {
+    <# Lines in the files under -Folder (or the given -File list) holding what looks like a real e-mail address
+       or *.onmicrosoft.com tenant: '<relative path>:<line>: <match>'. Placeholders (contoso.example...) pass. #>
+    param([Parameter(Mandatory)] [string] $Folder, [string[]] $File)
+    $root = $Folder.TrimEnd('\')
+    $files = if ($PSBoundParameters.ContainsKey('File')) { $File } else { Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object FullName }
+    foreach ($path in $files) {
+        # One pattern: with several, Select-String reports only the first that matches on a line.
+        foreach ($hit in Select-String -LiteralPath $path -AllMatches -Pattern '[A-Za-z0-9._%+-]+@(?<d>[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})|\b(?<d>[A-Za-z0-9-]+\.onmicrosoft\.com)\b') {
+            foreach ($match in $hit.Matches) {
+                $domain = $match.Groups['d'].Value.ToLowerInvariant()
+                if ($domain -notmatch $script:PlaceholderDomain -and $domain -ne 'contoso.onmicrosoft.com') {
+                    '{0}:{1}: {2}' -f $path.Substring($root.Length + 1), $hit.LineNumber, $match.Value
+                }
+            }
+        }
+    }
+}
+
+function Get-TkExportPlan {
+    <#
+    .SYNOPSIS
+        What Export-TkModule would write for these modules, without writing anything: Files (Source, Path in the
+        export, Runtime, Executable), LeftOut (result files that stay behind), Warnings, and TenantData - lines that
+        look like a real address or tenant, which need -AllowTenantData to export.
+    #>
+    param([Parameter(Mandatory)] [object[]] $Module)
+    $files = New-Object System.Collections.Generic.List[object]
+    $leftOut = New-Object System.Collections.Generic.List[string]
+    $warnings = New-Object System.Collections.Generic.List[string]
+    $tenant = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($m in $Module) {
+        if (-not $m.IsValid) { throw "'$($m.Name)' is not a valid module and can't be exported: $($m.Errors -join ' ')" }
+        if ($seen.ContainsKey($m.Id)) { continue }
+        $seen[$m.Id] = $true
+        $dir = $m.Directory.TrimEnd('\')
+        $included = New-Object System.Collections.Generic.List[string]
+        foreach ($file in Get-ChildItem -LiteralPath $dir -Recurse -File) {
+            $relative = $file.FullName.Substring($dir.Length + 1)
+            if (@($script:ExportLeftOut | Where-Object { $file.Name -like $_ }).Count) { $leftOut.Add("$($m.Id)\$relative"); continue }
+            $runtime = Get-TkRuntimeForFile $file.FullName
+            $unix = $runtime -and (Get-TkRuntimeDefinition $runtime).Unix
+            $files.Add([pscustomobject]@{ Module = $m; Source = $file.FullName; Path = "$($m.Id)/$($relative -replace '\\', '/')"; Runtime = $runtime; Executable = [bool]$unix })
+            $included.Add($file.FullName)
+        }
+        foreach ($hit in @(Find-TkTenantData -Folder $dir -File $included.ToArray())) { $tenant.Add("$($m.Id)\$hit") }
+        if ($m.Runtime -in 'Bash', 'Zsh') {
+            $first = [IO.File]::ReadAllLines($m.EntryPath) | Select-Object -First 1
+            if ($first -notmatch '^#!') { $warnings.Add("$($m.Name): no #! line, so on the target run it as '$($m.Runtime.ToLowerInvariant()) $(Split-Path $m.EntryPath -Leaf)'.") }
+        }
+        if ($m.Requires.GraphScopes.Count -or $m.Requires.ExchangeOnline) {
+            $warnings.Add("$($m.Name): expects the toolkit to sign in to Microsoft 365. Its README says how to connect first when it runs on its own.")
+        }
+    }
+    [pscustomobject]@{ Files = $files.ToArray(); LeftOut = $leftOut.ToArray(); Warnings = $warnings.ToArray(); TenantData = $tenant.ToArray() }
+}
+
+function New-TkExportReadme {
+    <# The README.txt that goes next to an exported module: what it is, its inputs and how to run it on its own. #>
+    param([Parameter(Mandatory)] $Module)
+    $leaf = Split-Path $Module.EntryPath -Leaf
+    $runtime = $Module.Runtime
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add($Module.Name)
+    $lines.Add('=' * $Module.Name.Length)
+    $lines.Add('')
+    $lines.Add($Module.Description)
+    $lines.Add('')
+    $lines.Add("Id: $($Module.Id)    Version: $($Module.Version)    Language: $runtime")
+    if ($Module.Platforms.Count) { $lines.Add("Runs on: $($Module.Platforms -join ', ')") }
+    if ($Module.Requires.GraphScopes.Count) { $lines.Add("Needs Microsoft Graph (module Microsoft.Graph.Authentication) with: $($Module.Requires.GraphScopes -join ', ')") }
+    if ($Module.Requires.ExchangeOnline) { $lines.Add('Needs Exchange Online (module ExchangeOnlineManagement)') }
+    $lines.Add('')
+    $lines.Add('Inputs')
+    $lines.Add('------')
+    if (-not $Module.Parameters.Count) { $lines.Add('None.') }
+    foreach ($p in $Module.Parameters) {
+        $kind = switch ($p.Type) { 'List' { 'list - repeat it for each value' } 'Bool' { 'switch' } 'Choice' { "one of: $($p.Options -join ', ')" } 'Int' { 'whole number' } default { 'text' } }
+        $lines.Add("  $($p.Name)$(if ($p.Required) { ' (required)' }) - $($p.Label): $kind$(if ($p.HelpText) { ". $($p.HelpText)" })")
+    }
+    $lines.Add('')
+    $lines.Add('Run it')
+    $lines.Add('------')
+    $example = foreach ($p in $Module.Parameters | Where-Object Required) { $p }
+    switch ($runtime) {
+        'PowerShell' {
+            $argText = (@($example | ForEach-Object { "-$($_.Name) <$($_.Label)>" }) -join ' ')
+            if ($Module.Requires.GraphScopes.Count) { $lines.Add("  Connect-MgGraph -Scopes $($Module.Requires.GraphScopes -join ',')") }
+            if ($Module.Requires.ExchangeOnline) { $lines.Add('  Connect-ExchangeOnline') }
+            $lines.Add("  powershell.exe -ExecutionPolicy RemoteSigned -File .\$leaf $argText".TrimEnd())
+            if ($Module.SupportsWhatIf) { $lines.Add('  Add -WhatIf for a dry run.') }
+        }
+        'Cmd' {
+            foreach ($p in $example) { $lines.Add("  set `"TK_PARAM_$($p.Name.ToUpperInvariant())=<$($p.Label)>`"") }
+            $lines.Add("  $leaf$(if ($Module.DryRunArgument) { "        (dry run: $leaf $($Module.DryRunArgument))" })")
+            $lines.Add('  Inputs are environment variables TK_PARAM_<NAME>; a list is one value per line.')
+        }
+        default {
+            $argText = (@($example | ForEach-Object { "--$($_.Name) `"<$($_.Label)>`"" }) -join ' ')
+            $command = if ($runtime -eq 'Python') { "python3 $leaf" } else { "./$leaf" }
+            if ($runtime -ne 'Python') { $lines.Add("  chmod +x $leaf      (only needed after copying from a USB stick; the .tar.gz keeps it)") }
+            $lines.Add("  $command $argText".TrimEnd())
+            if ($runtime -eq 'Python') { $lines.Add("  On Windows: py -3 $leaf $argText".TrimEnd()) }
+            if ($Module.DryRunArgument) { $lines.Add("  Add $($Module.DryRunArgument) for a dry run.") }
+            $lines.Add('  Inputs: --Name value (a list repeats --Name, a switch is a bare --Name), or environment variables TK_PARAM_<NAME>.')
+        }
+    }
+    $lines.Add('')
+    $lines.Add('Lines that start with ##tk:row are result rows (JSON); the toolkit shows them as a grid.')
+    $lines.Add('Exported from Admin Toolkit. Check SHA256SUMS.txt before you run it: sha256sum -c SHA256SUMS.txt')
+    ($lines -join "`n") + "`n"
+}
+
+function New-TkTarGzArchive {
+    <# Writes a .tar.gz (POSIX ustar) of in-memory entries @{ Path; Bytes; Mode }, so Unix scripts keep their
+       executable bit (0755) - a folder copied to a FAT or exFAT USB stick can't carry it. #>
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [object[]] $Entries)
+    $ascii = [Text.Encoding]::ASCII
+    $utf8 = New-Object Text.UTF8Encoding $false
+    $mtime = [long]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    $file = [IO.File]::Open($Path, 'CreateNew')
+    try {
+        $gzip = New-Object IO.Compression.GZipStream ($file, [IO.Compression.CompressionMode]::Compress)
+        try {
+            # Every folder first, then the files, each folder once.
+            $dirs = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($entry in $Entries) {
+                $parts = $entry.Path.Split('/')
+                for ($i = 1; $i -lt $parts.Count; $i++) { [void]$dirs.Add((($parts[0..($i - 1)]) -join '/') + '/') }
+            }
+            $all = @($dirs | ForEach-Object { @{ Path = $_; Bytes = [byte[]]@(); Mode = 493; Dir = $true } }) + @($Entries)
+            foreach ($entry in $all) {
+                $header = New-Object byte[] 512
+                $name = $utf8.GetBytes($entry.Path)
+                $prefix = [byte[]]@()
+                if ($name.Length -gt 100) {
+                    # ustar: the path splits at a '/' into prefix (155) and name (100).
+                    $cut = $entry.Path.LastIndexOf('/', [Math]::Min($entry.Path.Length - 2, 154))
+                    $prefix = $utf8.GetBytes($entry.Path.Substring(0, $cut)); $name = $utf8.GetBytes($entry.Path.Substring($cut + 1))
+                    if ($cut -lt 0 -or $prefix.Length -gt 155 -or $name.Length -gt 100) { throw "Path too long for the archive: $($entry.Path)" }
+                }
+                $put = { param($Offset, [byte[]] $Value) [Array]::Copy($Value, 0, $header, $Offset, $Value.Length) }
+                $octal = { param([long] $Number, [int] $Width) $ascii.GetBytes([Convert]::ToString($Number, 8).PadLeft($Width - 1, '0') + [char]0) }
+                & $put 0 $name
+                & $put 100 (& $octal $entry.Mode 8)
+                & $put 108 (& $octal 0 8)
+                & $put 116 (& $octal 0 8)
+                & $put 124 (& $octal $entry.Bytes.Length 12)
+                & $put 136 (& $octal $mtime 12)
+                & $put 148 ($ascii.GetBytes('        '))
+                $header[156] = if ($entry.Dir) { [byte][char]'5' } else { [byte][char]'0' }
+                & $put 257 ($ascii.GetBytes("ustar$([char]0)00"))
+                & $put 345 $prefix
+                $sum = 0; foreach ($b in $header) { $sum += $b }
+                & $put 148 ($ascii.GetBytes([Convert]::ToString($sum, 8).PadLeft(6, '0') + [char]0 + ' '))
+                $gzip.Write($header, 0, 512)
+                if ($entry.Bytes.Length) {
+                    $gzip.Write($entry.Bytes, 0, $entry.Bytes.Length)
+                    $pad = (512 - $entry.Bytes.Length % 512) % 512
+                    if ($pad) { $gzip.Write((New-Object byte[] $pad), 0, $pad) }
+                }
+            }
+            $gzip.Write((New-Object byte[] 1024), 0, 1024)    # end of archive: two empty blocks
+        }
+        finally { $gzip.Dispose() }
+    }
+    finally { $file.Dispose() }
+}
+
+function Export-TkModule {
+    <#
+    .SYNOPSIS
+        Exports modules to take to another machine (e.g. on a USB stick): a folder, or a .tar.gz that keeps the
+        executable bit. Each module gets its own folder with its files and a README.txt; SHA256SUMS.txt covers
+        everything. Scripts get the line endings their language needs (LF and no BOM for bash, zsh, Python).
+        Result files a script left in its folder (*.csv, *.log...) are never exported.
+        Fails closed: if a file looks like it holds a real address or tenant, nothing is written unless -AllowTenantData.
+    #>
+    param(
+        [Parameter(Mandatory)] [object[]] $Module,
+        [Parameter(Mandatory)] [string] $Destination,
+        [ValidateSet('Folder', 'TarGz')] [string] $Format = 'Folder',
+        [switch] $AllowTenantData
+    )
+    $plan = Get-TkExportPlan -Module $Module
+    if ($plan.TenantData.Count -and -not $AllowTenantData) {
+        throw "Possible real tenant data - nothing was exported. Check these lines, or export anyway with -AllowTenantData:`n  $($plan.TenantData -join "`n  ")"
+    }
+    if (-not (Test-Path -LiteralPath $Destination -PathType Container)) { throw "Destination folder not found: $Destination" }
+
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($file in $plan.Files) {
+        # Plain assignments: through an if-expression the byte array would be unrolled (and an empty file become $null).
+        if ($file.Runtime) { $bytes = ConvertTo-TkScriptBytes -Path $file.Source -Runtime $file.Runtime }
+        else { $bytes = [IO.File]::ReadAllBytes($file.Source) }
+        $entries.Add(@{ Path = $file.Path; Bytes = $bytes; Mode = if ($file.Executable) { 493 } else { 420 } })    # 0755 / 0644
+    }
+    $utf8 = New-Object Text.UTF8Encoding $false
+    $modules = @($plan.Files | ForEach-Object { $_.Module } | Sort-Object Id -Unique)
+    foreach ($m in $modules) { $entries.Add(@{ Path = "$($m.Id)/README.txt"; Bytes = $utf8.GetBytes((New-TkExportReadme $m)); Mode = 420 }) }
+    $index = @('Admin Toolkit export', '====================', '', ('{0:yyyy-MM-dd HH:mm}, {1} module(s):' -f (Get-Date), $modules.Count), '') +
+        @($modules | ForEach-Object { "  $($_.Id)/  $($_.Name) ($($_.Runtime))" }) +
+        @('', 'Each folder has a README.txt that says how to run it.', 'Check the files first: sha256sum -c SHA256SUMS.txt (or Get-FileHash in PowerShell).', '',
+            'These scripts run with the rights of whoever starts them. Only run a copy you trust.')
+    $entries.Add(@{ Path = 'README.txt'; Bytes = $utf8.GetBytes(($index -join "`n") + "`n"); Mode = 420 })
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $sums = foreach ($e in $entries) { '{0}  {1}' -f (-join ($sha.ComputeHash([byte[]]$e.Bytes) | ForEach-Object { $_.ToString('x2') })), $e.Path } }
+    finally { $sha.Dispose() }
+    $entries.Add(@{ Path = 'SHA256SUMS.txt'; Bytes = $utf8.GetBytes(($sums -join "`n") + "`n"); Mode = 420 })
+
+    # A new name every time: an export never overwrites another.
+    $base = 'AdminToolkit-export-{0:yyyyMMdd-HHmmss}' -f (Get-Date)
+    $name = $base
+    for ($n = 2; (Test-Path -LiteralPath (Join-Path $Destination $name)) -or (Test-Path -LiteralPath (Join-Path $Destination "$name.tar.gz")); $n++) { $name = "$base-$n" }
+    if ($Format -eq 'TarGz') {
+        $path = Join-Path $Destination "$name.tar.gz"
+        $rooted = @($entries | ForEach-Object { @{ Path = "$name/$($_.Path)"; Bytes = $_.Bytes; Mode = $_.Mode } })
+        New-TkTarGzArchive -Path $path -Entries $rooted
+    }
+    else {
+        $path = Join-Path $Destination $name
+        foreach ($e in $entries) {
+            $target = Join-Path $path ($e.Path -replace '/', '\')
+            $dir = Split-Path $target -Parent
+            if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Path $dir -Force) }
+            [IO.File]::WriteAllBytes($target, [byte[]]$e.Bytes)
+        }
+    }
+    [pscustomobject]@{
+        Path = $path; Format = $Format; Modules = $modules.Count; Files = $entries.Count
+        LeftOut = $plan.LeftOut; Warnings = $plan.Warnings; TenantData = $plan.TenantData
+    }
+}
+
+function Get-TkRemovableDrive {
+    <# Removable drives (USB sticks) that are ready, for the export destination picker. #>
+    @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Removable' -and $_.IsReady } | ForEach-Object {
+            [pscustomobject]@{ Root = $_.RootDirectory.FullName; Label = if ($_.VolumeLabel) { "$($_.VolumeLabel) ($($_.Name.TrimEnd('\')))" } else { $_.Name.TrimEnd('\') }; FileSystem = $_.DriveFormat }
+        })
+}
+
+#endregion
+
 #region Preferences & JSON
 
 function Get-TkPreferencePath {
@@ -2270,4 +2522,5 @@ Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm
     Get-TkModuleFolder, Get-TkModuleLocation, Uninstall-TkInstalledModule,
     Get-TkSessionLimit, Test-TkSessionLimit, Save-TkSessionLimit, ConvertTo-TkExcelData, Open-TkExcelTable,
     Get-TkRuntimeName, Get-TkRuntimeDefinition, Get-TkRuntimeForFile, Get-TkRuntimeStatus,
-    Get-TkExternalScriptAnalysis, ConvertTo-TkScriptBytes
+    Get-TkExternalScriptAnalysis, ConvertTo-TkScriptBytes,
+    Find-TkTenantData, Get-TkExportPlan, New-TkExportReadme, New-TkTarGzArchive, Export-TkModule, Get-TkRemovableDrive

@@ -69,6 +69,8 @@
             <Border Grid.Column="0" Style="{StaticResource Card}">
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <Button x:Name="ExportModulesButton" DockPanel.Dock="Right" Content="Export..." Margin="6,0,0,0" Padding="10,3"
+                                ToolTip="Copy scripts to a folder or USB stick (.tar.gz keeps them executable) to run on another machine"/>
                         <Button x:Name="AddModuleButton" DockPanel.Dock="Right" Content="+ Add module" Margin="0" Padding="10,3"
                                 ToolTip="Turn an existing script (.ps1, .cmd, .bat, .sh, .zsh, .py) into a module, or start from a blank template"/>
                         <TextBlock Text="Modules" Style="{StaticResource SectionTitle}" VerticalAlignment="Center" Margin="0"/>

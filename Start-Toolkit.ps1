@@ -30,6 +30,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Import-Module (Join-Path $PSScriptRoot 'Core\Toolkit.Core.psm1') -Force
 . (Join-Path $PSScriptRoot 'Core\AddModuleDialog.ps1')
 . (Join-Path $PSScriptRoot 'Core\ScriptViewer.ps1')
+. (Join-Path $PSScriptRoot 'Core\ExportDialog.ps1')
 
 $settingsPath = Join-Path $PSScriptRoot 'Config\settings.json'
 $settings = if (Test-Path -LiteralPath $settingsPath) { Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
@@ -1173,6 +1174,18 @@ $ui.RunButton.Add_Click({
         }
         $ui.OutputTabs.SelectedItem = if ($Blocked.Count) { $ui.BlockedTab } elseif ($Output.Count) { $ui.ResultsTab } else { $ui.LogTab }
         Update-ConnectionStatus
+    }
+})
+
+$ui.ExportModulesButton.Add_Click({
+    # The selected module starts ticked; "All shown" ticks what the search and tag filter show.
+    $selected = @(if ($State.Current) { $State.Current.Id })
+    $shown = @($State.Modules | Where-Object { $_.IsValid -and (Test-ModuleVisible $_) } | ForEach-Object Id)
+    $result = Show-TkExportDialog -Owner $ui.Window -Modules $State.Modules -Selected $selected -Shown $shown
+    if ($result) {
+        Write-UiLog 'INFO' "Exported $($result.Modules) module(s) as $($result.Format) to $($result.Path)"
+        if ($result.TenantData.Count) { Write-UiLog 'WARN' "Exported despite $($result.TenantData.Count) line(s) that look like tenant data." }
+        $ui.StatusText.Text = "Exported $($result.Modules) module(s) to $($result.Path)"
     }
 })
 

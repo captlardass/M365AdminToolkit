@@ -75,8 +75,8 @@ $bootstrapPath = Join-Path $OutputPath "$name.Get-AdminToolkit.ps1"
 $devOnly = 'Tests', 'CLAUDE.md', '.gitattributes', '.gitignore'
 # The only modules in the Core edition. Full has every committed module.
 $coreModules = '_Template', 'Demo.SelfTest'
-# Placeholder domains that may appear in shipped files; any other address or tenant name stops the build.
-$placeholderDomain = '(^|\.)(contoso\.example|example\.(com|net|org)|[a-z0-9-]+\.(example|invalid|test|localhost))$'
+# The tenant-data rule (placeholder addresses only) lives in Core: Find-TkTenantData.
+Import-Module (Join-Path $root 'Core\Toolkit.Core.psm1') -Force
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is needed to package a committed version.' }
 $commit = git -C $root rev-parse --verify --quiet "$Ref^{commit}"
@@ -97,19 +97,10 @@ $dirty = git -C $root status --porcelain --untracked-files=no
 if ($dirty -and $Ref -eq 'HEAD') { Write-Warning 'There are uncommitted changes: they are NOT in this build, which packages the last commit.' }
 
 function Assert-NoTenantData([string] $Folder) {
-    <# Fails closed: shipped files may only contain placeholder addresses and tenant names. #>
-    $found = foreach ($file in Get-ChildItem -LiteralPath $Folder -Recurse -File) {
-        # One pattern: with several, Select-String reports only the first that matches on a line.
-        foreach ($hit in Select-String -LiteralPath $file.FullName -AllMatches -Pattern '[A-Za-z0-9._%+-]+@(?<d>[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})|\b(?<d>[A-Za-z0-9-]+\.onmicrosoft\.com)\b') {
-            foreach ($match in $hit.Matches) {
-                $domain = $match.Groups['d'].Value.ToLowerInvariant()
-                if ($domain -notmatch $placeholderDomain -and $domain -ne 'contoso.onmicrosoft.com') {
-                    '{0}:{1}: {2}' -f $file.FullName.Substring($Folder.Length + 1), $hit.LineNumber, $match.Value
-                }
-            }
-        }
-    }
-    if ($found) { throw "Possible real tenant data in the package - replace it with contoso.example placeholders:`n  $(@($found) -join "`n  ")" }
+    <# Fails closed: shipped files may only contain placeholder addresses and tenant names. Find-TkTenantData
+       (Core) holds the rule, so the export to a USB stick checks exactly the same thing. #>
+    $found = @(Find-TkTenantData -Folder $Folder)
+    if ($found.Count) { throw "Possible real tenant data in the package - replace it with contoso.example placeholders:`n  $($found -join "`n  ")" }
 }
 
 function New-EditionZip([string] $Package, [string] $Edition, [string] $ZipPath) {
