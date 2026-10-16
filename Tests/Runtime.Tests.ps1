@@ -193,6 +193,53 @@ printf 'DRY:%s\n' "$TK_DRYRUN"
     $override = Get-TkRuntimeStatus Python -Settings ([pscustomobject]@{ Runtimes = [pscustomobject]@{ Python = [pscustomobject]@{ Path = 'C:\nowhere\python.exe' } } }) -Refresh
     Check 'A settings override that does not exist makes the runtime unavailable (no silent fallback)' (-not $override.Available -and $override.Reason -like '*not found*') $override.Reason
     [void](Get-TkRuntimeStatus Python -Refresh)
+
+    # --- Add module: analysis of tk-param lines, New-TkModule per language, the templates run ---
+    $userScript = New-Script 'disk-report.sh' @'
+#!/usr/bin/env bash
+# tk-description: Shows disk usage
+# tk-param: Path | String | Required | Folder to scan
+# tk-param: Mode | Choice(fast/full) | | How deep
+# tk-param: Hosts | List
+# tk-param: bad-name | String
+# tk-dryrun: --dry-run
+# tk-platforms: Linux, macOS
+read -p "Continue?" answer
+echo done
+'@
+    [IO.File]::WriteAllText($userScript, ([IO.File]::ReadAllText($userScript) -replace "`n", "`r`n"))    # saved on Windows
+    $a = Get-TkScriptAnalysis -Path $userScript
+    Check 'Analysis reads tk-param, tk-dryrun, tk-description and tk-platforms' ($a.Runtime -eq 'Bash' -and @($a.Parameters).Count -eq 3 -and $a.Parameters[0].Required -and $a.Parameters[1].Type -eq 'Choice' -and ($a.Parameters[1].Options -join '/') -eq 'fast/full' -and $a.Parameters[2].Type -eq 'List' -and $a.DryRunArgument -eq '--dry-run' -and $a.SupportsWhatIf -and $a.SuggestedDescription -eq 'Shows disk usage' -and ($a.Platforms -join ',') -eq 'Linux,macOS') ''
+    Check 'Analysis warns about prompts, CRLF and bad parameter names' (@($a.Warnings | Where-Object { $_ -like '*Asks for input*' -or $_ -like '*CRLF*' -or $_ -like '*bad-name*' }).Count -eq 3) ($a.Warnings -join ' | ')
+
+    $modulesPath = Join-Path $work 'NewModules'
+    [void](New-Item -ItemType Directory -Path $modulesPath)
+    $created = New-TkModule -ModulesPath $modulesPath -Id 'Local.DiskReport' -Name 'Disk report' -Category 'Local' -ScriptPath $userScript -ReadOnly -GraphScopes 'User.Read.All' 3>$null
+    $bytes = [IO.File]::ReadAllBytes((Join-Path $created.Directory 'module.sh'))
+    $json = Get-Content (Join-Path $created.Directory 'module.json') -Raw | ConvertFrom-Json
+    Check 'New-TkModule from a .sh: valid, module.sh, Runtime Bash, dry-run switch, no ReadOnly or Graph' ($created.IsValid -and $created.Runtime -eq 'Bash' -and $json.EntryPoint -eq 'module.sh' -and $json.DryRunArgument -eq '--dry-run' -and $json.ReadOnly -eq $false -and -not @($json.Requires.GraphScopes).Count) "$($created.Errors -join ' | ')"
+    Check 'New-TkModule stores a Unix script with LF line endings' ($bytes -notcontains 13) ''
+
+    foreach ($runtime in 'Cmd', 'Bash', 'Zsh', 'Python') {
+        $m = New-TkModule -ModulesPath $modulesPath -Id "Local.Blank$runtime" -Name "Blank $runtime" -Category 'Local' -Runtime $runtime
+        Check "Blank $runtime template creates a valid module" ($m.IsValid -and $m.Runtime -eq $runtime -and @($m.Parameters).Count -ge 1) "$($m.Errors -join ' | ')"
+    }
+    $folder = Join-Path $work 'files'
+    [void](New-Item -ItemType Directory -Path $folder)
+    Set-Content (Join-Path $folder 'a&b.txt') ('x' * 3000)
+    Set-Content (Join-Path $folder 'small.txt') 'x'
+    $r = Invoke-Run (Join-Path $modulesPath 'Local.BlankCmd\module.cmd') 'Cmd' -Parameters @{ Path = $folder }
+    Check 'The cmd template runs and lists files as rows (even a name with &)' ($r.State -eq 'Completed' -and -not $r.Failure -and @($r.Output | Where-Object Name -eq 'a&b.txt').Count -eq 1) "$($r.Failure) $($r.Warnings -join ' | ')"
+    if ((Get-TkRuntimeStatus Python).Available) {
+        $r = Invoke-Run (Join-Path $modulesPath 'Local.BlankPython\module.py') 'Python' -Parameters @{ Path = $folder; Top = 1 } -DryRunArgument '--dry-run' -DryRun $true
+        Check 'The Python template runs, honours --Top and the dry-run switch' ($r.State -eq 'Completed' -and @($r.Output).Count -eq 1 -and $r.Output[0].Name -eq 'a&b.txt' -and @($r.Info | Where-Object { $_ -like '*dry run: True*' }).Count) "$($r.Failure) $($r.Info -join ' | ')"
+    }
+    else { Skip 'The Python template runs' 'no Python interpreter' }
+    if ((Get-TkRuntimeStatus Bash).Available) {
+        $r = Invoke-Run (Join-Path $modulesPath 'Local.BlankBash\module.sh') 'Bash' -Parameters @{ Path = '/etc'; Top = 3 }
+        Check 'The bash template runs and outputs rows' ($r.State -eq 'Completed' -and @($r.Output).Count -eq 3 -and $null -ne $r.Output[0].SizeKB) "$($r.Failure) $($r.Warnings -join ' | ')"
+    }
+    else { Skip 'The bash template runs' 'no bash interpreter' }
 }
 catch { Check 'Runtime suite runs without errors' $false "$($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)" }
 finally {

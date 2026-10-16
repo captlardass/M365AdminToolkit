@@ -34,6 +34,17 @@ function Show-TkAddModuleDialog {
         [void]$d.CategoryBox.Items.Add($category)
     }
     $d.CategoryBox.Text = 'Custom'
+    foreach ($runtime in Get-TkRuntimeName) { [void]$d.RuntimeBox.Items.Add($runtime) }
+    $d.RuntimeBox.SelectedIndex = 0
+
+    function Set-RuntimeView([string] $Runtime) {
+        <# Other languages can't use the toolkit's sign-in or be read-only: grey those out and say why. #>
+        $external = $Runtime -and $Runtime -ne 'PowerShell'
+        foreach ($control in $d.ExchangeCheck, $d.GraphScopesBox, $d.ReadOnlyCheck) { $control.IsEnabled = -not $external }
+        if ($external) { $d.ExchangeCheck.IsChecked = $false; $d.ReadOnlyCheck.IsChecked = $false; $d.GraphScopesBox.Text = '' }
+        $d.ConnectionsNote.Visibility = if ($external) { 'Visible' } else { 'Collapsed' }
+    }
+    $d.RuntimeBox.Add_SelectionChanged({ if (-not $d.ScriptPathBox.Text.Trim()) { Set-RuntimeView ([string]$d.RuntimeBox.SelectedItem) } })
 
     function Set-QuietText($Box, [string] $Text) {
         $dlg.Updating = $true
@@ -62,22 +73,37 @@ function Show-TkAddModuleDialog {
         $d.DialogStatus.Text = ''
 
         if (-not $path) {
-            $d.AnalysisSummary.Text = 'No script selected: the module will be created from the blank template, ready for you to edit.'
+            $d.RuntimeBox.IsEnabled = $true
+            Set-RuntimeView ([string]$d.RuntimeBox.SelectedItem)
+            $d.AnalysisSummary.Text = 'No script selected: the module will be created from the blank template for the language above, ready for you to edit.'
             return
         }
-        if ($path -notlike '*.ps1' -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            $d.AnalysisSummary.Text = 'Choose an existing .ps1 file.'
+        $runtime = Get-TkRuntimeForFile $path
+        if (-not $runtime -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            $d.AnalysisSummary.Text = 'Choose an existing .ps1, .cmd, .bat, .sh, .zsh or .py file.'
             return
         }
+        # The file type decides the language.
+        $d.RuntimeBox.SelectedItem = $runtime
+        $d.RuntimeBox.IsEnabled = $false
+        Set-RuntimeView $runtime
         # Even a script with syntax errors can be read - let people look before they decide.
         $d.ViewSourceButton.IsEnabled = $true
         try { $analysis = Get-TkScriptAnalysis -Path $path }
         catch { $d.AnalysisSummary.Text = $_.Exception.Message; return }
 
         $dlg.Analysis = $analysis
-        $dryRun = if ($analysis.SupportsWhatIf) { 'dry run: native WhatIf (the script reports its changes)' } else { 'dry run: enforced by the toolkit (changes are blocked and listed)' }
-        $d.AnalysisSummary.Text = "Found $($analysis.Parameters.Count) input(s); $dryRun."
-        $d.ReadOnlyCheck.IsChecked = $analysis.LooksReadOnly
+        if ($analysis.Runtime -ne 'PowerShell') {
+            $status = Get-TkRuntimeStatus -Name $analysis.Runtime -Settings $settings    # $settings: Start-Toolkit.ps1
+            $dryRun = if ($analysis.DryRunArgument) { "dry run: the script's own $($analysis.DryRunArgument) switch" } else { 'no dry run (add a # tk-dryrun: line if the script has a dry-run switch)' }
+            $runsWith = if ($status.Available) { "runs through $($status.Label)" } else { "no interpreter on this PC, so export only ($($status.Reason))" }
+            $d.AnalysisSummary.Text = "$($analysis.Runtime) script, $runsWith. Found $($analysis.Parameters.Count) input(s) in tk-param lines; $dryRun. Unguarded: every run asks first."
+        }
+        else {
+            $dryRun = if ($analysis.SupportsWhatIf) { 'dry run: native WhatIf (the script reports its changes)' } else { 'dry run: enforced by the toolkit (changes are blocked and listed)' }
+            $d.AnalysisSummary.Text = "Found $($analysis.Parameters.Count) input(s); $dryRun."
+            $d.ReadOnlyCheck.IsChecked = $analysis.LooksReadOnly
+        }
         if ($analysis.Parameters.Count) {
             $rows = @($analysis.Parameters | ForEach-Object {
                 [pscustomobject]@{
@@ -96,7 +122,7 @@ function Show-TkAddModuleDialog {
 
         if ($dlg.AutoName -or -not $d.NameBox.Text) { Set-QuietText $d.NameBox $analysis.SuggestedName; $dlg.AutoName = $true }
         if (-not $d.DescriptionBox.Text -and $analysis.SuggestedDescription) { $d.DescriptionBox.Text = $analysis.SuggestedDescription }
-        $d.ExchangeCheck.IsChecked = $analysis.UsesExchange
+        if ($analysis.Runtime -eq 'PowerShell') { $d.ExchangeCheck.IsChecked = $analysis.UsesExchange }
         if ($analysis.GraphScopes) { $d.GraphScopesBox.Text = $analysis.GraphScopes -join ', ' }
         Update-SuggestedId
     }
@@ -123,7 +149,7 @@ function Show-TkAddModuleDialog {
 
     $d.BrowseButton.Add_Click({
         $open = New-Object Microsoft.Win32.OpenFileDialog
-        $open.Filter = 'PowerShell script (*.ps1)|*.ps1'
+        $open.Filter = 'Scripts (*.ps1;*.cmd;*.bat;*.sh;*.zsh;*.py)|*.ps1;*.cmd;*.bat;*.sh;*.zsh;*.py|PowerShell (*.ps1)|*.ps1|cmd (*.cmd;*.bat)|*.cmd;*.bat|bash / zsh (*.sh;*.zsh)|*.sh;*.zsh|Python (*.py)|*.py'
         $open.Title = 'Choose the script to turn into a module'
         if ($open.ShowDialog($d.Window)) {
             $d.ScriptPathBox.Text = $open.FileName
@@ -180,6 +206,7 @@ function Show-TkAddModuleDialog {
             GraphScopes    = [string[]]@(Split-TkList $d.GraphScopesBox.Text -Separator '[,\s]+')
         }
         if ($path) { $request.ScriptPath = $path }
+        else { $request.Runtime = [string]$d.RuntimeBox.SelectedItem }
         try {
             $dlg.Created = New-TkModule @request
             $d.Window.DialogResult = $true

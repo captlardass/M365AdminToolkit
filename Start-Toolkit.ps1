@@ -94,7 +94,10 @@ function Write-UiLog {
 
 function Update-Buttons {
     $busy = [bool]$State.Job
-    $ui.RunButton.IsEnabled = (-not $busy) -and [bool]$State.Current -and [bool]$State.Current.IsValid
+    # A script whose interpreter isn't on this PC can still be read and exported, not run.
+    $runnable = [bool]$State.Current -and [bool]$State.Current.IsValid -and
+        (-not $State.Current.External -or (Get-TkRuntimeStatus -Name $State.Current.Runtime -Settings $settings).Available)
+    $ui.RunButton.IsEnabled = (-not $busy) -and $runnable
     $ui.CancelButton.IsEnabled = $busy -and [bool]$State.Job.Cancellable
     # SaveSessionButton: new limits are applied in the worker, which can't take a second job.
     foreach ($name in 'ConnectGraphButton', 'ConnectExoButton', 'DisconnectButton', 'ReloadButton', 'AddModuleButton', 'SaveTagsButton', 'SaveSessionButton') {
@@ -276,7 +279,7 @@ function Test-ModuleVisible {
     if ($filter) {
         $pattern = '*' + [System.Management.Automation.WildcardPattern]::Escape($filter) + '*'
         $hit = $Module.Name -like $pattern -or $Module.Category -like $pattern -or $Module.Id -like $pattern -or
-            $Module.Description -like $pattern -or @($Module.Tags | Where-Object { $_ -like $pattern }).Count
+            $Module.Description -like $pattern -or $Module.Runtime -like $pattern -or @($Module.Tags | Where-Object { $_ -like $pattern }).Count
         if (-not $hit) { return $false }
     }
     foreach ($t in $State.SelectedTags) { if ($Module.Tags -notcontains $t) { return $false } }
@@ -344,6 +347,13 @@ function Update-ModuleTree {
         }
         'Name' {
             foreach ($m in $valid | Sort-Object Name) { [void]$ui.ModuleTree.Items.Add((New-ModuleTreeItem $m)) }
+        }
+        'Runtime' {
+            # In the runtime table's order: PowerShell first, then cmd, bash, zsh, Python.
+            foreach ($r in Get-TkRuntimeName) {
+                $group = @($valid | Where-Object Runtime -eq $r)
+                if ($group) { New-GroupTreeItem -Key "rt:$r" -Title $r -Modules $group }
+            }
         }
         default {
             foreach ($g in $valid | Group-Object Category | Sort-Object Name) {
@@ -445,6 +455,23 @@ function Update-DryRunOption {
     $ui.DryRunInfo.Visibility = 'Visible'
     # Safe by default: modules start in dry-run mode. Read-only ones don't need it - they're guarded on every run.
     $ui.WhatIfCheck.IsChecked = -not $Module.ReadOnly
+    # Only the guard can promise "nothing is changed": another language's dry run is the script's own word.
+    $ui.WhatIfCheck.Content = if ($Module.DryRun.Mode -eq 'External') { "Dry run ($($Module.DryRunArgument)) - the script's own, not checked by the toolkit" }
+        else { 'Dry run (WhatIf) - nothing is changed in Microsoft 365' }
+
+    if ($Module.DryRun.Mode -eq 'External') {
+        # Another language: the guard can't see it. Only offer a dry run the script implements itself.
+        $runtime = Get-TkRuntimeStatus -Name $Module.Runtime -Settings $settings
+        $ui.WhatIfCheck.Visibility = if ($Module.SupportsWhatIf) { 'Visible' } else { 'Collapsed' }
+        $ui.WhatIfCheck.IsChecked = [bool]$Module.SupportsWhatIf
+        $how = if ($Module.SupportsWhatIf) { "Dry run: the toolkit runs the script with $($Module.DryRunArgument) and the script decides what that means." }
+        else { 'No dry run: this script has no dry-run switch. The toolkit asks before every run.' }
+        $how += "`nUnguarded: " + (@($Module.DryRun.Caveats) -join ' ')
+        if (-not $runtime.Available) { $how += "`nExport only on this PC - no interpreter found ($($runtime.Reason)). Install one, or set Runtimes.$($Module.Runtime).Path in Config\settings.json." }
+        $ui.DryRunInfo.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Tk.DryRunWarning')
+        $ui.DryRunInfo.Text = $how
+        return
+    }
 
     $how = if ($Module.DryRun.Mode -eq 'Native') {
         'The script supports WhatIf and reports what it would change. As a safety net the toolkit also blocks any Microsoft 365 change.'
@@ -465,7 +492,7 @@ function Update-DryRunOption {
 
 function Show-Blocked {
     <# Fills the Blocked changes tab after a guarded run. #>
-    param([object[]] $Entries = @(), [string] $Guard = 'Off', [bool] $Native, [string] $ModuleName)
+    param([object[]] $Entries = @(), [string] $Guard = 'Off', [bool] $Native, [string] $ModuleName, [bool] $External, [bool] $DryRun)
     $rows = @($Entries | Where-Object { $_ } | ForEach-Object {
         [pscustomobject]@{ Command = $_.Command; Target = $_.Target; Arguments = $_.Arguments }
     })
@@ -481,7 +508,11 @@ function Show-Blocked {
             if ($rows.Count) { "This read-only module tried to make $($rows.Count) change(s). All were blocked. Review its script - it should not do this." }
             else { 'Read-only run: no changes were attempted.' }
         }
-        default { 'Real run - the dry-run guard was off, so nothing was blocked.' }
+        default {
+            if ($External -and $DryRun) { "Unguarded script, run with its own dry-run switch: the toolkit can't see or block what it does. Check its output in Results and Log." }
+            elseif ($External) { "Unguarded script (not PowerShell): the toolkit can't see or block what it does." }
+            else { 'Real run - the dry-run guard was off, so nothing was blocked.' }
+        }
     }
     # The tab keeps showing the last run while you browse other modules - say which one it was.
     if ($ModuleName) { $ui.BlockedSummary.Text += "   [last run: $ModuleName]" }
@@ -502,7 +533,12 @@ function Update-ModuleHeader {
     if ($Module.Requires.ExchangeOnline) { $requires += 'Exchange Online' }
     if ($Module.Requires.GraphScopes.Count) { $requires += "Graph ($($Module.Requires.GraphScopes -join ', '))" }
     if (-not $requires) { $requires = @('nothing') }
-    $mode = if (-not $Module.DryRun) { '' } elseif ($Module.ReadOnly) { '   |   Read-only' } elseif ($Module.DryRun.Mode -eq 'Native') { '   |   WhatIf: native' } else { '   |   WhatIf: enforced by toolkit' }
+    $mode = if (-not $Module.DryRun) { '' } elseif ($Module.External) { '   |   UNGUARDED' } elseif ($Module.ReadOnly) { '   |   Read-only' } elseif ($Module.DryRun.Mode -eq 'Native') { '   |   WhatIf: native' } else { '   |   WhatIf: enforced by toolkit' }
+    if ($Module.External) {
+        $runtime = Get-TkRuntimeStatus -Name $Module.Runtime -Settings $settings
+        $mode = "   |   $(if ($runtime.Available) { $runtime.Label } else { "$($Module.Runtime) - export only" })$mode"
+        if ($Module.Platforms.Count) { $mode += "   |   For: $($Module.Platforms -join ', ')" }
+    }
     $ui.ModuleMeta.Text = '{0}   |   v{1}   |   {2}   |   Requires: {3}{4}' -f $Module.Category, $Module.Version, $Module.Id, ($requires -join ' + '), $mode
 
     $ui.HeaderTagPanel.Children.Clear()
@@ -964,7 +1000,7 @@ $ui.ModuleTree.Add_SelectedItemChanged({
 $ui.SearchBox.Add_TextChanged({ Update-ModuleTree })
 $ui.ReloadButton.Add_Click({ Import-Modules })
 
-$ui.GroupByBox.SelectedIndex = [math]::Max(0, [array]::IndexOf(@('Category', 'Tag', 'Name'), $State.GroupBy))
+$ui.GroupByBox.SelectedIndex = [math]::Max(0, [array]::IndexOf(@('Category', 'Tag', 'Name', 'Runtime'), $State.GroupBy))
 $ui.GroupByBox.Add_SelectionChanged({
     $State.GroupBy = [string]$ui.GroupByBox.SelectedItem.Tag
     Save-Preferences
@@ -1057,15 +1093,33 @@ $ui.RunButton.Add_Click({
         return
     }
     $parameters = $form.Values
-    $dryRun = [bool]$ui.WhatIfCheck.IsChecked
-    # Only scripts that declare SupportsShouldProcess accept -WhatIf; the guard covers all of them.
-    if ($module.SupportsWhatIf) { $parameters['WhatIf'] = $dryRun }
-    $guard = if ($dryRun) { 'DryRun' } elseif ($module.ReadOnly) { 'ReadOnly' } else { 'Off' }
-    if ($guard -eq 'Off') {
+    $dryRun = [bool]$ui.WhatIfCheck.IsChecked -and $ui.WhatIfCheck.Visibility -eq 'Visible'
+    $runtime = $null
+    if ($module.External) {
+        # Another language runs as its own process: the guard can't see it, so it is always Off and always confirmed.
+        $runtime = Get-TkRuntimeStatus -Name $module.Runtime -Settings $settings
+        if (-not $runtime.Available) {
+            [void][System.Windows.MessageBox]::Show("No interpreter for $($module.Runtime) was found on this PC: $($runtime.Reason)", 'Cannot run', 'OK', 'Warning')
+            return
+        }
+        $guard = 'Off'
+        $what = if ($dryRun) { "with its own dry-run switch ($($module.DryRunArgument)). The toolkit can't check that the script honours it." }
+        else { 'for real.' }
         $answer = [System.Windows.MessageBox]::Show(
-            "'$($module.Name)' will run for real and can make changes in your tenant.`n`nTip: read it with 'View script' or do a dry run first.`n`nContinue?",
-            'Confirm changes', 'YesNo', 'Warning')
+            "'$($module.Name)' is a $($module.Runtime) script and runs through $($runtime.Label) $what`n`nUNGUARDED: it runs with your rights and can change anything you can - files, settings, other systems. The dry-run guard only sees PowerShell.`n`nTip: read it with 'View script' first.`n`nContinue?",
+            'Confirm unguarded run', 'YesNo', 'Warning')
         if ($answer -ne 'Yes') { return }
+    }
+    else {
+        # Only scripts that declare SupportsShouldProcess accept -WhatIf; the guard covers all of them.
+        if ($module.SupportsWhatIf) { $parameters['WhatIf'] = $dryRun }
+        $guard = if ($dryRun) { 'DryRun' } elseif ($module.ReadOnly) { 'ReadOnly' } else { 'Off' }
+        if ($guard -eq 'Off') {
+            $answer = [System.Windows.MessageBox]::Show(
+                "'$($module.Name)' will run for real and can make changes in your tenant.`n`nTip: read it with 'View script' or do a dry run first.`n`nContinue?",
+                'Confirm changes', 'YesNo', 'Warning')
+            if ($answer -ne 'Yes') { return }
+        }
     }
 
     $ui.ResultGrid.ItemsSource = $null
@@ -1075,22 +1129,29 @@ $ui.RunButton.Add_Click({
     # Never show an old figure next to a run in progress.
     $State.ReadinessByModule.Remove($module.Id)
     Show-Readiness
-    Show-Blocked -Entries @() -Guard $guard
-    $modeText = switch ($guard) { 'DryRun' { 'DRY RUN - Microsoft 365 changes are blocked' } 'ReadOnly' { 'read-only run - changes are blocked' } default { 'REAL RUN - changes will be made' } }
+    Show-Blocked -Entries @() -Guard $guard -External $module.External -DryRun $dryRun
+    $modeText = if ($module.External) {
+        if ($dryRun) { "UNGUARDED $($module.Runtime) script, its own dry run ($($module.DryRunArgument))" } else { "UNGUARDED $($module.Runtime) script - REAL RUN" }
+    }
+    else { switch ($guard) { 'DryRun' { 'DRY RUN - Microsoft 365 changes are blocked' } 'ReadOnly' { 'read-only run - changes are blocked' } default { 'REAL RUN - changes will be made' } } }
     Write-UiLog 'INFO' "Mode: $modeText"
     # Log which inputs were supplied, never their values - they may identify people.
     $suppliedNames = if ($parameters.Count) { ($parameters.Keys | Sort-Object) -join ', ' } else { 'none' }
-    Write-TkLogFile -Path $State.LogFile -Level 'INFO' -Message "Run $($module.Id) v$($module.Version) mode=$guard with inputs: $suppliedNames"
+    $logMode = if ($module.External) { "unguarded-$($module.Runtime)$(if ($dryRun) { '-dryrun' })" } else { $guard }
+    Write-TkLogFile -Path $State.LogFile -Level 'INFO' -Message "Run $($module.Id) v$($module.Version) mode=$logMode with inputs: $suppliedNames"
 
-    $jobName = if ($guard -eq 'DryRun') { "$($module.Name) (dry run)" } else { $module.Name }
-    Start-UiJob -Name $jobName -Cancellable -Data @{ Guard = $guard; Native = $module.SupportsWhatIf; ModuleName = $module.Name; ModuleId = $module.Id; Readiness = $module.Readiness } -Parameters @{
-        EntryPath  = $module.EntryPath
-        Requires   = $module.Requires
-        Parameters = $parameters
-        Guard      = $guard
+    $jobName = if ($dryRun) { "$($module.Name) (dry run)" } else { $module.Name }
+    Start-UiJob -Name $jobName -Cancellable -Data @{ Guard = $guard; Native = $module.SupportsWhatIf; ModuleName = $module.Name; ModuleId = $module.Id; Readiness = $module.Readiness; External = $module.External; DryRun = $dryRun } -Parameters @{
+        EntryPath      = $module.EntryPath
+        Requires       = $module.Requires
+        Parameters     = $parameters
+        Guard          = $guard
+        Runtime        = $runtime
+        DryRunArgument = $module.DryRunArgument
+        DryRun         = $dryRun
     } -ScriptBlock {
-        param($EntryPath, $Requires, $Parameters, $Guard)
-        Invoke-TkModule -EntryPath $EntryPath -Requires $Requires -Parameters $Parameters -Guard $Guard
+        param($EntryPath, $Requires, $Parameters, $Guard, $Runtime, $DryRunArgument, $DryRun)
+        Invoke-TkModule -EntryPath $EntryPath -Requires $Requires -Parameters $Parameters -Guard $Guard -Runtime $Runtime -DryRunArgument $DryRunArgument -DryRun $DryRun
     } -OnComplete {
         param($Done, $Output, $Blocked, $Job)
         Show-Results -Objects $Output -From $Job.Data.ModuleName
@@ -1105,7 +1166,7 @@ $ui.RunButton.Add_Click({
         else { $State.ReadinessByModule.Remove($Job.Data.ModuleId) }
         # Only redraw if the module that ran is still the one on screen.
         if ($State.Current -and $State.Current.Id -eq $Job.Data.ModuleId) { Show-Readiness }
-        Show-Blocked -Entries $Blocked -Guard $Job.Data.Guard -Native $Job.Data.Native -ModuleName $Job.Data.ModuleName
+        Show-Blocked -Entries $Blocked -Guard $Job.Data.Guard -Native $Job.Data.Native -ModuleName $Job.Data.ModuleName -External $Job.Data.External -DryRun $Job.Data.DryRun
         if ($Job.Data.Guard -ne 'Off') {
             # Counts only - the entries themselves stay on screen.
             Write-UiLog 'INFO' "$($Job.Data.Guard): $($Blocked.Count) Microsoft 365 change(s) blocked."

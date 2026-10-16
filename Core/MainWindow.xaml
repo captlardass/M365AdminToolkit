@@ -70,7 +70,7 @@
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
                         <Button x:Name="AddModuleButton" DockPanel.Dock="Right" Content="+ Add module" Margin="0" Padding="10,3"
-                                ToolTip="Turn an existing .ps1 script into a module, or start from the blank template"/>
+                                ToolTip="Turn an existing script (.ps1, .cmd, .bat, .sh, .zsh, .py) into a module, or start from a blank template"/>
                         <TextBlock Text="Modules" Style="{StaticResource SectionTitle}" VerticalAlignment="Center" Margin="0"/>
                     </DockPanel>
                     <TextBox DockPanel.Dock="Top" x:Name="SearchBox" Margin="0,0,0,8" Padding="4,3"
@@ -81,6 +81,7 @@
                             <ComboBoxItem Content="Category" Tag="Category"/>
                             <ComboBoxItem Content="Tag" Tag="Tag"/>
                             <ComboBoxItem Content="Name (A-Z)" Tag="Name"/>
+                            <ComboBoxItem Content="Language" Tag="Runtime"/>
                         </ComboBox>
                     </DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="Filter by tag" Style="{StaticResource Hint}" Margin="0,0,0,4"/>

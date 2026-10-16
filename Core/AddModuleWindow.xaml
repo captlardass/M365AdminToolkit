@@ -17,7 +17,13 @@
                     <StackPanel>
                         <TextBlock Text="1. Script" Style="{StaticResource SectionTitle}"/>
                         <TextBlock Style="{StaticResource Hint}"
-                                   Text="Pick an existing .ps1. It is read, not run: its param() block becomes the input form. Leave empty to start from the blank template."/>
+                                   Text="Pick an existing script: .ps1, .cmd/.bat, .sh, .zsh or .py. It is read, not run. A .ps1's param() block becomes the input form; other languages declare inputs in '# tk-param:' lines. Leave empty to start from a blank template."/>
+                        <DockPanel Margin="0,8,0,0">
+                            <TextBlock Text="Language" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <ComboBox x:Name="RuntimeBox" Width="160" HorizontalAlignment="Left"
+                                      ToolTip="The language of the blank template. With a script, its file type decides."
+                                      AutomationProperties.Name="Language"/>
+                        </DockPanel>
                         <DockPanel Margin="0,8,0,0">
                             <Button x:Name="ViewSourceButton" DockPanel.Dock="Right" Content="View script" IsEnabled="False"
                                     ToolTip="Read the whole script before adding it"/>
@@ -78,8 +84,10 @@
 
                 <!-- 3. Connections -->
                 <Border Style="{StaticResource Card}" Margin="0,10,0,0">
-                    <StackPanel>
+                    <StackPanel x:Name="ConnectionsPanel">
                         <TextBlock Text="3. Connections" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock x:Name="ConnectionsNote" Style="{StaticResource Hint}" Visibility="Collapsed" Foreground="{DynamicResource Tk.Warning}"
+                                   Text="Only PowerShell modules can use the toolkit's Microsoft 365 sign-in or be read-only: other languages run unguarded, and the toolkit asks before every run."/>
                         <TextBlock Style="{StaticResource Hint}" Text="The toolkit signs in to these before the script runs. Pre-filled from what the script uses - check them."/>
                         <CheckBox x:Name="ExchangeCheck" Content="Exchange Online" Margin="0,8,0,0"/>
                         <TextBlock Text="Microsoft Graph scopes" Margin="0,8,0,2"/>

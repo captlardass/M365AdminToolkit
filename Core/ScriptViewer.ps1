@@ -113,7 +113,10 @@ function Set-TkScriptViewerContent {
         $ui.ViewerPath.Text = $summary.Path
         $ui.ViewerMeta.Text = '{0} lines   |   {1} KB   |   last changed {2:yyyy-MM-dd HH:mm}' -f $summary.Lines, $summary.SizeKB, $summary.Modified
         $ui.ViewerHash.Text = "SHA-256  $($summary.Sha256)"
-        Add-TkCodeLines -List $ui.CodeList -Lines @(ConvertTo-TkCodeLine -Text $summary.Text -Language PowerShell)
+        # PowerShell highlighting only for PowerShell: other languages (bash, Python, cmd) are shown as plain text.
+        $runtime = Get-TkRuntimeForFile $Path
+        $language = if ($runtime) { (Get-TkRuntimeDefinition $runtime).Language } else { 'Plain' }
+        Add-TkCodeLines -List $ui.CodeList -Lines @(ConvertTo-TkCodeLine -Text $summary.Text -Language $language)
     }
     catch {
         $ui.ViewerMeta.Text = "Could not read the script: $($_.Exception.Message)"

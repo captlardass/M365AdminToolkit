@@ -69,6 +69,24 @@ function Get-TkRuntimeForFile {
     $null
 }
 
+function ConvertTo-TkScriptBytes {
+    <# A script's bytes with the line endings its runtime needs: LF for Unix runtimes (bash fails on CRLF), with a
+       UTF-8 BOM removed (it would hide the #! line); CRLF for cmd/PowerShell. Byte level, so a cmd file saved in
+       the OEM code page keeps its characters. #>
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Runtime)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $unix = (Get-TkRuntimeDefinition $Runtime).Unix
+    $start = if ($unix -and $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { 3 } else { 0 }
+    $out = New-Object System.IO.MemoryStream ($bytes.Length + 64)
+    for ($i = $start; $i -lt $bytes.Length; $i++) {
+        $b = $bytes[$i]
+        if ($b -eq 13 -and $i + 1 -lt $bytes.Length -and $bytes[$i + 1] -eq 10) { continue }    # CR of a CRLF
+        if ($b -eq 10 -and -not $unix) { $out.WriteByte(13) }
+        $out.WriteByte($b)
+    }
+    , $out.ToArray()
+}
+
 function Test-TkWslDistribution {
     <# Whether WSL has a Linux distribution for this user (read from the registry: wsl.exe itself may boot the VM). #>
     [bool]@(Get-ChildItem -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' -ErrorAction SilentlyContinue).Count
@@ -103,7 +121,13 @@ function Get-TkRuntimeStatus {
     $definition = Get-TkRuntimeDefinition $Name
     if (-not $definition) { throw "Unknown runtime '$Name'. Use one of: $((Get-TkRuntimeName) -join ', ')." }
     $key = $definition.Name
-    if (-not $Refresh -and $script:RuntimeCache.ContainsKey($key)) { return $script:RuntimeCache[$key] }
+    $override = $null
+    if ($Settings -and $Settings.PSObject.Properties['Runtimes'] -and $Settings.Runtimes -and $Settings.Runtimes.PSObject.Properties[$key]) {
+        $override = $Settings.Runtimes.$key
+    }
+    # Keyed by the override too, so a lookup without settings never hides one with them.
+    $cacheKey = "$key|$(if ($override) { "$($override.Path)|$(@($override.Arguments) -join ' ')" })"
+    if (-not $Refresh -and $script:RuntimeCache.ContainsKey($cacheKey)) { return $script:RuntimeCache[$cacheKey] }
 
     $status = [pscustomobject]@{
         Name = $key; Available = $false; Interpreter = $null; Arguments = [string[]]@(); Wsl = $false
@@ -111,13 +135,8 @@ function Get-TkRuntimeStatus {
     }
     if ($key -eq 'PowerShell') {
         $status.Available = $true; $status.Label = 'PowerShell (in the toolkit)'
-        $script:RuntimeCache[$key] = $status
+        $script:RuntimeCache[$cacheKey] = $status
         return $status
-    }
-
-    $override = $null
-    if ($Settings -and $Settings.PSObject.Properties['Runtimes'] -and $Settings.Runtimes -and $Settings.Runtimes.PSObject.Properties[$key]) {
-        $override = $Settings.Runtimes.$key
     }
     $candidates = if ($override -and $override.Path) {
         $path = [string]$override.Path
@@ -138,7 +157,7 @@ function Get-TkRuntimeStatus {
         break
     }
     if (-not $status.Available) { $status.Reason = $reasons -join '; ' }
-    $script:RuntimeCache[$key] = $status
+    $script:RuntimeCache[$cacheKey] = $status
     $status
 }
 
@@ -647,15 +666,109 @@ function Get-TkAstValue {
     try { $Ast.SafeGetValue() } catch { $null }
 }
 
+function Get-TkExternalScriptAnalysis {
+    <#
+    .SYNOPSIS
+        Reads a cmd, bash, zsh or Python script without running it. There is no param() block, so inputs
+        come from optional header comments (# for bash/zsh/Python, REM or :: for cmd):
+            # tk-description: Lists the largest folders under a path
+            # tk-param: Path | String | Required | Folder to scan
+            # tk-param: Top | Int | | How many folders to list
+            # tk-dryrun: --dry-run
+            # tk-platforms: Linux, macOS
+        Types: String, Int, Bool, List, or Choice(a/b/c). Warns about what misbehaves in the toolkit.
+    #>
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Runtime)
+
+    $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    $definition = Get-TkRuntimeDefinition $Runtime
+    $text = [System.IO.File]::ReadAllText($resolved)
+    $lines = $text -split '\r?\n'
+    $warnings = New-Object System.Collections.Generic.List[string]
+    $parameters = New-Object System.Collections.Generic.List[object]
+    $description = ''
+    $dryRunArgument = ''
+    $platforms = @()
+    $comment = if ($definition.Name -eq 'Cmd') { '^\s*(@?rem\b|::)\s*' } else { '^\s*#\s*' }
+
+    foreach ($line in $lines) {
+        if ($line -notmatch ($comment + 'tk-(?<key>param|description|dryrun|platforms)\s*:\s*(?<value>.*?)\s*$')) { continue }
+        $value = $Matches['value']
+        switch ($Matches['key']) {
+            'description' { $description = $value }
+            'dryrun' { $dryRunArgument = $value }
+            'platforms' { $platforms = @(Split-TkList $value) }
+            'param' {
+                $parts = @($value -split '\|' | ForEach-Object { $_.Trim() })
+                $name = $parts[0]
+                if ($name -notmatch '^[A-Za-z][A-Za-z0-9_]*$') { $warnings.Add("tk-param '$name' was skipped: names may only use letters, digits and _."); continue }
+                $type = if ($parts.Count -gt 1 -and $parts[1]) { $parts[1] } else { 'String' }
+                $options = @()
+                if ($type -match '^Choice\((?<o>.*)\)$') { $options = @(Split-TkList $Matches['o'] -Separator '/'); $type = 'Choice' }
+                if ($script:ParameterTypes -notcontains $type) { $warnings.Add("tk-param '$name' has unknown type '$type'; it is a text box."); $type = 'String' }
+                $parameters.Add([pscustomobject]@{
+                    Name     = $name
+                    Label    = ConvertTo-TkLabel $name
+                    Type     = $type
+                    Required = $parts.Count -gt 2 -and $parts[2] -match '^(Required|Mandatory|yes|true)$'
+                    Default  = $null
+                    Options  = $options
+                    HelpText = if ($parts.Count -gt 3) { ($parts[3..($parts.Count - 1)] -join ' | ') } else { '' }
+                })
+            }
+        }
+    }
+
+    if ($definition.Unix -and $definition.Name -ne 'Python' -and $lines[0] -notmatch '^#!') {
+        $warnings.Add("No #! line at the top: add e.g. '#!/usr/bin/env $($definition.Name.ToLowerInvariant())' so it also runs on its own after export.")
+    }
+    if ($definition.Unix -and $text.Contains("`r`n")) { $warnings.Add('Has Windows (CRLF) line endings: they are converted to LF when the module is created.') }
+    $prompts = switch ($definition.Name) {
+        'Cmd' { '(?im)^\s*(pause\b|set\s+/p\b|choice\b)' }
+        'Python' { '\binput\s*\(|getpass\.' }
+        default { '(?m)(^\s*|[;&|]\s*)read\b|\bselect\s+\w+\s+in\b' }
+    }
+    if ($text -match $prompts) { $warnings.Add('Asks for input while running (e.g. read / input() / pause). There is no console: it gets end-of-file. Turn the prompts into tk-param inputs.') }
+    if ($definition.Name -ne 'Cmd' -and $text -match '(?m)(^\s*|[;&|]\s*)sudo\b') { $warnings.Add('Uses sudo, which waits for a password the toolkit cannot type. Run it on the target machine after export, or allow the command without a password.') }
+    if ($dryRunArgument -and $dryRunArgument -notmatch '^(--?|/)[A-Za-z][A-Za-z0-9-]*$') {
+        $warnings.Add("tk-dryrun '$dryRunArgument' is not a plain switch such as --dry-run, so it was ignored.")
+        $dryRunArgument = ''
+    }
+    $badPlatforms = @($platforms | Where-Object { $script:Platforms -notcontains $_ })
+    if ($badPlatforms.Count) { $warnings.Add("Unknown platform(s) ignored: $($badPlatforms -join ', '). Use $($script:Platforms -join ', ')."); $platforms = @($platforms | Where-Object { $script:Platforms -contains $_ }) }
+    $warnings.Add("Not PowerShell: the toolkit can't guard what it does, so every run asks first. It can't be read-only or use the toolkit's Microsoft 365 sign-in.")
+
+    [pscustomobject]@{
+        Path                 = $resolved
+        Runtime              = $definition.Name
+        Parameters           = $parameters.ToArray()
+        SupportsWhatIf       = [bool]$dryRunArgument
+        DryRunArgument       = $dryRunArgument
+        Platforms            = [string[]]$platforms
+        SuggestedName        = ConvertTo-TkLabel ([System.IO.Path]::GetFileNameWithoutExtension($resolved))
+        SuggestedDescription = $description
+        UsesExchange         = $false
+        UsesGraph            = $false
+        GraphScopes          = [string[]]@()
+        LooksReadOnly        = $false
+        Warnings             = $warnings.ToArray()
+    }
+}
+
 function Get-TkScriptAnalysis {
     <#
     .SYNOPSIS
         Reads a .ps1 without running it and works out what a module manifest for it should say:
         GUI inputs from the param() block, WhatIf support, likely connections and Graph scopes,
         plus warnings about things that would misbehave inside the toolkit.
+        Scripts in another language (.cmd, .bat, .sh, .zsh, .py) go to Get-TkExternalScriptAnalysis.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string] $Path)
+
+    $runtime = Get-TkRuntimeForFile $Path
+    if (-not $runtime) { throw "Unsupported script type '$([IO.Path]::GetExtension($Path))'. Use .ps1, .cmd, .bat, .sh, .zsh or .py." }
+    if ($runtime -ne 'PowerShell') { return Get-TkExternalScriptAnalysis -Path $Path -Runtime $runtime }
 
     $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
     $tokens = $null
@@ -811,8 +924,11 @@ function Get-TkScriptAnalysis {
 
     [pscustomobject]@{
         Path                 = $resolved
+        Runtime              = 'PowerShell'
         Parameters           = $parameters.ToArray()
         SupportsWhatIf       = $supportsWhatIf
+        DryRunArgument       = ''
+        Platforms            = [string[]]@()
         SuggestedName        = ConvertTo-TkLabel ([System.IO.Path]::GetFileNameWithoutExtension($resolved))
         SuggestedDescription = if ($help -and $help.Synopsis) { ($help.Synopsis -replace '\s+', ' ').Trim() } else { '' }
         UsesExchange         = $usesExchange
@@ -836,8 +952,9 @@ function ConvertTo-TkManifestParameter {
 function New-TkModule {
     <#
     .SYNOPSIS
-        Creates a module folder from an existing script (manifest generated from its param block)
-        or, without -ScriptPath, from Modules\_Template. The result is validated; if it isn't
+        Creates a module folder from an existing script (manifest generated from its param block,
+        or its tk-param lines for other languages) or, without -ScriptPath, from Modules\_Template
+        (PowerShell) or Core\Templates\<Runtime>.<ext>. The result is validated; if it isn't
         valid nothing is left behind.
     #>
     [CmdletBinding(SupportsShouldProcess)]
@@ -852,7 +969,9 @@ function New-TkModule {
         [switch] $ExchangeOnline,
         [string[]] $GraphScopes = @(),
         [switch] $ReadOnly,
-        [string] $Author = ''
+        [string] $Author = '',
+        # Only without -ScriptPath (a script's extension decides its runtime): which blank template to start from.
+        [string] $Runtime = 'PowerShell'
     )
 
     if ($Id -notmatch '^[A-Za-z][A-Za-z0-9]*(\.[A-Za-z][A-Za-z0-9]*)+$') {
@@ -862,23 +981,45 @@ function New-TkModule {
     if (Test-Path -LiteralPath $target) { throw "A folder named '$Id' already exists in $ModulesPath." }
     if (@(Get-TkModule -Path $ModulesPath | Where-Object { $_.Id -eq $Id }).Count) { throw "Another module already uses the Id '$Id'." }
 
+    $dryRunArgument = ''
+    $platforms = @()
     if ($ScriptPath) {
         $analysis = Get-TkScriptAnalysis -Path $ScriptPath
         $source = $analysis.Path
+        $runtimeName = $analysis.Runtime
         $parameters = $analysis.Parameters
         $supportsWhatIf = $analysis.SupportsWhatIf
+        $dryRunArgument = $analysis.DryRunArgument
+        $platforms = $analysis.Platforms
         if (-not $Description) { $Description = $analysis.SuggestedDescription }
         if (-not $Description) { $Description = "Imported from $(Split-Path -Leaf $source)." }
     }
     else {
-        $templateDir = Join-Path $ModulesPath '_Template'
-        $source = Join-Path $templateDir 'module.ps1'
-        if (-not (Test-Path -LiteralPath $source)) { throw "Template not found in $templateDir." }
-        $template = Get-Content -LiteralPath (Join-Path $templateDir 'module.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-        $parameters = @(Get-TkManifestParameter $template | ForEach-Object { ConvertTo-TkParameterDefinition $_ })
-        $supportsWhatIf = [bool]$template.SupportsWhatIf
+        $definition = Get-TkRuntimeDefinition $Runtime
+        if (-not $definition) { throw "Unknown runtime '$Runtime'. Use one of: $((Get-TkRuntimeName) -join ', ')." }
+        $runtimeName = $definition.Name
+        if ($runtimeName -eq 'PowerShell') {
+            $templateDir = Join-Path $ModulesPath '_Template'
+            $source = Join-Path $templateDir 'module.ps1'
+            if (-not (Test-Path -LiteralPath $source)) { throw "Template not found in $templateDir." }
+            $template = Get-Content -LiteralPath (Join-Path $templateDir 'module.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            $parameters = @(Get-TkManifestParameter $template | ForEach-Object { ConvertTo-TkParameterDefinition $_ })
+            $supportsWhatIf = [bool]$template.SupportsWhatIf
+        }
+        else {
+            $source = Join-Path $PSScriptRoot "Templates\$runtimeName$(@($definition.Extensions)[0])"
+            if (-not (Test-Path -LiteralPath $source)) { throw "Template not found: $source." }
+            $analysis = Get-TkExternalScriptAnalysis -Path $source -Runtime $runtimeName
+            $parameters = $analysis.Parameters
+            $supportsWhatIf = $analysis.SupportsWhatIf
+            $dryRunArgument = $analysis.DryRunArgument
+            $platforms = $analysis.Platforms
+        }
         if (-not $Description) { $Description = 'TODO: describe what this module does and why the admin center cannot.' }
     }
+    $definition = Get-TkRuntimeDefinition $runtimeName
+    $external = $runtimeName -ne 'PowerShell'
+    $entryPoint = 'module' + $(if ($external) { [IO.Path]::GetExtension($source).ToLowerInvariant() } else { '.ps1' })
 
     $manifest = [ordered]@{
         Id             = $Id
@@ -888,21 +1029,30 @@ function New-TkModule {
         Description    = $Description
         Version        = '1.0.0'
         Author         = $Author
-        EntryPoint     = 'module.ps1'
+        EntryPoint     = $entryPoint
         SupportsWhatIf = $supportsWhatIf
-        ReadOnly       = [bool]$ReadOnly
+        ReadOnly       = [bool]$ReadOnly -and -not $external
         Requires       = [ordered]@{
-            ExchangeOnline = [bool]$ExchangeOnline
-            GraphScopes    = [string[]]@(Split-TkList $GraphScopes -Separator '[,\s]+')
+            ExchangeOnline = [bool]$ExchangeOnline -and -not $external
+            GraphScopes    = [string[]]@(if (-not $external) { Split-TkList $GraphScopes -Separator '[,\s]+' })
         }
         Parameters     = @($parameters | ForEach-Object { ConvertTo-TkManifestParameter $_ })
+    }
+    if ($external) {
+        # Next to EntryPoint, so the language is easy to spot in module.json.
+        $manifest.Insert(7, 'Runtime', $runtimeName)
+        if ($dryRunArgument) { $manifest.Insert(9, 'DryRunArgument', $dryRunArgument) }
+        if (@($platforms).Count) { $manifest.Insert(8, 'Platforms', [string[]]@($platforms)) }
+        if ($ReadOnly -or $ExchangeOnline -or $GraphScopes.Count) { Write-Warning "$runtimeName modules can't be read-only or use Graph/Exchange Online sign-in; those settings were left out." }
     }
 
     if (-not $PSCmdlet.ShouldProcess($target, 'Create module')) { return }
 
     New-Item -ItemType Directory -Path $target | Out-Null
     try {
-        Copy-Item -LiteralPath $source -Destination (Join-Path $target 'module.ps1')
+        $entry = Join-Path $target $entryPoint
+        if ($external) { [System.IO.File]::WriteAllBytes($entry, (ConvertTo-TkScriptBytes -Path $source -Runtime $runtimeName)) }
+        else { Copy-Item -LiteralPath $source -Destination $entry }
         $manifestPath = Join-Path $target 'module.json'
         ConvertTo-TkJson $manifest | Set-Content -LiteralPath $manifestPath -Encoding UTF8
         $written = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -2119,4 +2269,5 @@ Export-ModuleMember -Function Get-TkModule, Test-TkManifest, New-TkParameterForm
     Get-TkModuleInventory, Get-TkGalleryVersion, Test-TkElevated, Get-TkModuleUpdatePlan, Update-TkInstalledModule,
     Get-TkModuleFolder, Get-TkModuleLocation, Uninstall-TkInstalledModule,
     Get-TkSessionLimit, Test-TkSessionLimit, Save-TkSessionLimit, ConvertTo-TkExcelData, Open-TkExcelTable,
-    Get-TkRuntimeName, Get-TkRuntimeDefinition, Get-TkRuntimeForFile, Get-TkRuntimeStatus
+    Get-TkRuntimeName, Get-TkRuntimeDefinition, Get-TkRuntimeForFile, Get-TkRuntimeStatus,
+    Get-TkExternalScriptAnalysis, ConvertTo-TkScriptBytes

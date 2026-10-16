@@ -1,11 +1,18 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Creates a new toolkit module - from an existing script, or from Modules\_Template.
+    Creates a new toolkit module - from an existing script (.ps1, .cmd, .bat, .sh, .zsh, .py), or from a blank
+    template: Modules\_Template for PowerShell, Core\Templates\<Runtime>.<ext> for -Runtime Cmd, Bash, Zsh or Python.
     Same engine as the GUI's "+ Add module" button.
 
 .EXAMPLE
     .\Tools\New-ToolkitModule.ps1 -Id Exchange.SharedSentItems -Name 'Shared mailbox sent items' -Category 'Exchange Online' -FromScript C:\Scripts\Set-SentItems.ps1 -ExchangeOnline -Tags 'Shared mailbox', 'Bulk change'
+
+.EXAMPLE
+    .\Tools\New-ToolkitModule.ps1 -Id Local.DiskUsage -Name 'Disk usage' -Category 'Linux' -FromScript C:\Scripts\disk-usage.sh -Tags Report
+
+.EXAMPLE
+    .\Tools\New-ToolkitModule.ps1 -Id Local.CleanTemp -Name 'Clean temp folder' -Category 'Windows' -Runtime Python
 
 .EXAMPLE
     .\Tools\New-ToolkitModule.ps1 -Id Entra.LicenseReport -Name 'License report' -Category 'Entra ID' -GraphScopes User.Read.All, Organization.Read.All -Tags Licensing, Report
@@ -20,7 +27,9 @@ param(
     [string] $FromScript,
     [switch] $ExchangeOnline,
     [string[]] $GraphScopes = @(),
-    [switch] $ReadOnly
+    [switch] $ReadOnly,
+    # Without -FromScript: the language of the blank template (the script's file type decides otherwise).
+    [ValidateSet('PowerShell', 'Cmd', 'Bash', 'Zsh', 'Python')] [string] $Runtime = 'PowerShell'
 )
 
 $root = Split-Path $PSScriptRoot -Parent
@@ -39,10 +48,10 @@ if ($FromScript) {
 # -WhatIf must be passed on explicitly: preference variables don't flow from a script into module functions.
 $module = New-TkModule -ModulesPath (Join-Path $root 'Modules') -Id $Id -Name $Name -Category $Category `
     -Description $Description -Tags $Tags -ScriptPath $FromScript -ExchangeOnline:$ExchangeOnline -GraphScopes $GraphScopes `
-    -ReadOnly:$ReadOnly `
+    -ReadOnly:$ReadOnly -Runtime $Runtime `
     -WhatIf:$WhatIfPreference
 
 if ($module) {
     Write-Host "Created $($module.Directory) with $($module.Parameters.Count) input(s)." -ForegroundColor Green
-    Write-Host 'Review module.json (labels, help texts) and module.ps1, then run .\Tools\Test-ToolkitModules.ps1'
+    Write-Host "Review module.json (labels, help texts) and $(Split-Path $module.EntryPath -Leaf), then run .\Tools\Test-ToolkitModules.ps1"
 }
