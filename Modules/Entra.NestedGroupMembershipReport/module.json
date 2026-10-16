@@ -8,7 +8,7 @@
   ],
   "Description": "Lists every group that is a member of another group, and which group(s) it is a member of - one row per group/parent pair, marked Direct or Inherited (via a chain of nested groups). The admin center only shows this one group at a time. Read-only; run it once per tenant and combine the CSVs on the TenantId column.",
   "Version": "1.0.0",
-  "Author": "M365 Admin Toolkit",
+  "Author": "Admin Toolkit",
   "EntryPoint": "module.ps1",
   "SupportsWhatIf": false,
   "ReadOnly": true,

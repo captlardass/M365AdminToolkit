@@ -1,23 +1,32 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Installs the M365 Admin Toolkit for the current user, with Start menu (and desktop) shortcuts.
+    Installs the Admin Toolkit for the current user, with Start menu (and desktop) shortcuts.
 
 .DESCRIPTION
-    Copies the toolkit to %LOCALAPPDATA%\Programs\M365AdminToolkit (no admin rights needed),
+    Copies the toolkit to %LOCALAPPDATA%\Programs\AdminToolkit (no admin rights needed),
     unblocks the files, creates shortcuts that open the GUI and adds an uninstall entry under
     Settings > Apps. Run it again from a newer copy to upgrade in place:
       - Core, Tools and the launchers are replaced.
       - Modules: new modules are added. A module file is only overwritten when the copy being
         installed is newer, so modules you create or edit in the installed copy are kept.
       - Config\settings.json and Logs are never touched.
+    An install from before the rename (M365 Admin Toolkit) is found and moved: its settings, logs and
+    modules are copied into the new folder, its program files, shortcuts and uninstall entry removed.
 
 .PARAMETER Destination
-    Install folder. Defaults to %LOCALAPPDATA%\Programs\M365AdminToolkit. With -ShowSummary and no
+    Install folder. Defaults to %LOCALAPPDATA%\Programs\AdminToolkit. With -ShowSummary and no
     -Destination, a folder picker opens.
     The folder must be private to you: system folders, network paths and folders that other users can
     write to are refused, because anyone who can change the files could run code as you. A new folder
     is created with access for you, SYSTEM and Administrators only.
+
+.PARAMETER MigrateFrom
+    An M365 Admin Toolkit install to move into this one. Without it, a normal install looks for one
+    itself (its Settings > Apps entry, then %LOCALAPPDATA%\Programs\M365AdminToolkit); -Portable only
+    migrates when this is given. Its Config\settings.json, Logs and Modules are copied (newer files win)
+    and its program files removed, so only the new copy starts. The old folder keeps your data until
+    you delete it.
 
 .PARAMETER DesktopShortcut
     Also put a shortcut on the desktop (the Start menu shortcut is always created).
@@ -44,6 +53,7 @@
 [CmdletBinding(DefaultParameterSetName = 'Install')]
 param(
     [string] $Destination,
+    [Parameter(ParameterSetName = 'Install')] [string] $MigrateFrom,
     [Parameter(ParameterSetName = 'Install')] [switch] $DesktopShortcut,
     [Parameter(ParameterSetName = 'Install')] [switch] $Portable,
     [Parameter(ParameterSetName = 'Uninstall', Mandatory)] [switch] $Uninstall,
@@ -52,21 +62,28 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$appName = 'M365 Admin Toolkit'
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M365AdminToolkit'
+$appName = 'Admin Toolkit'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AdminToolkit'
+# The names before the rename to Admin Toolkit: found and cleaned up on install and uninstall.
+$legacy = @{
+    Name = 'M365 Admin Toolkit'
+    Key  = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M365AdminToolkit'
+    Folder = Join-Path $env:LOCALAPPDATA 'Programs\M365AdminToolkit'
+}
 # The toolkit targets Windows PowerShell 5.1, even if this installer runs under PowerShell 7.
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 # What belongs to the program: replaced on upgrade, removed on uninstall. Everything else is user data.
 $programItems = 'Core', 'Tools', 'Start-Toolkit.ps1', 'Start-Toolkit.cmd', 'Install-Toolkit.ps1', 'Install-Toolkit.cmd',
-    'Get-M365AdminToolkit.ps1', 'README.md', 'VERSION', 'EDITION', 'Config\settings.example.json'
-$defaultDestination = Join-Path $env:LOCALAPPDATA 'Programs\M365AdminToolkit'
+    'Get-AdminToolkit.ps1', 'README.md', 'VERSION', 'EDITION', 'Config\settings.example.json',
+    'Get-M365AdminToolkit.ps1'    # the bootstrap script's name before the rename: removed on upgrade
+$defaultDestination = Join-Path $env:LOCALAPPDATA 'Programs\AdminToolkit'
 
 function Select-ToolkitFolder([string] $Default) {
     <# Folder picker for interactive installs. Returns $null when cancelled. #>
     Add-Type -AssemblyName System.Windows.Forms
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
     try {
-        $dialog.Description = "Choose where to install $appName. A M365AdminToolkit folder is created inside the folder you pick."
+        $dialog.Description = "Choose where to install $appName. An AdminToolkit folder is created inside the folder you pick."
         $dialog.SelectedPath = Split-Path $Default -Parent
         $dialog.ShowNewFolderButton = $true
         if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
@@ -74,8 +91,8 @@ function Select-ToolkitFolder([string] $Default) {
     }
     finally { $dialog.Dispose() }
     # Picking an existing install (or a folder already named for it) upgrades it in place.
-    if ((Split-Path $picked -Leaf) -eq 'M365AdminToolkit' -or (Test-Path -LiteralPath (Join-Path $picked 'Start-Toolkit.ps1'))) { $picked }
-    else { Join-Path $picked 'M365AdminToolkit' }
+    if ((Split-Path $picked -Leaf) -in 'AdminToolkit', 'M365AdminToolkit' -or (Test-Path -LiteralPath (Join-Path $picked 'Start-Toolkit.ps1'))) { $picked }
+    else { Join-Path $picked 'AdminToolkit' }
 }
 
 if (-not $Destination -and -not $Uninstall -and $ShowSummary) {
@@ -88,6 +105,10 @@ $shortcuts = @{
     StartMenu = Join-Path ([Environment]::GetFolderPath('Programs')) "$appName.lnk"
     Desktop   = Join-Path ([Environment]::GetFolderPath('Desktop')) "$appName.lnk"
 }
+$legacyShortcuts = @(
+    Join-Path ([Environment]::GetFolderPath('Programs')) "$($legacy.Name).lnk"
+    Join-Path ([Environment]::GetFolderPath('Desktop')) "$($legacy.Name).lnk"
+)
 
 function Get-LaunchArgument([string] $Folder) {
     # Same switches as Start-Toolkit.cmd: WPF needs STA, RemoteSigned applies to this process only.
@@ -101,7 +122,7 @@ function New-ToolkitShortcut([string] $Path, [string] $Folder) {
         $link.TargetPath = $powershell
         $link.Arguments = Get-LaunchArgument $Folder
         $link.WorkingDirectory = $Folder
-        $link.Description = 'Run Microsoft 365 admin modules from one window'
+        $link.Description = 'Run admin modules and scripts from one window'
         $link.IconLocation = "$powershell,0"
         $link.WindowStyle = 7    # minimized: only the GUI shows, not the console behind it
         $link.Save()
@@ -134,6 +155,46 @@ function Copy-NewerFile([string] $Source, [string] $Target) {
 function Assert-NotWorkingCopy([string] $Folder) {
     if (Test-Path -LiteralPath (Join-Path $Folder '.git')) {
         throw "$Folder is a git working copy, not an install folder. Choose another -Destination."
+    }
+}
+
+function Find-LegacyToolkit([string] $Source) {
+    <# The M365 Admin Toolkit install to move into this one: -MigrateFrom, else (not -Portable) the one
+       registered in Settings > Apps, else the old default folder. $null when there is none. Never the
+       folder the installer runs from: migrating removes the old program files. #>
+    $candidates = if ($MigrateFrom) { , $PSCmdlet.GetUnresolvedProviderPathFromPSPath($MigrateFrom).TrimEnd('\') }
+    elseif (-not $Portable) {
+        (Get-ItemProperty -Path $legacy.Key -ErrorAction SilentlyContinue).InstallLocation
+        $legacy.Folder
+    }
+    foreach ($folder in $candidates) {
+        if (-not $folder -or $folder -eq $Source -or $Source.StartsWith("$folder\", [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ((Test-Path -LiteralPath (Join-Path $folder 'Start-Toolkit.ps1')) -and -not (Test-Path -LiteralPath (Join-Path $folder '.git'))) { return $folder }
+    }
+    if ($MigrateFrom) { throw "No M365 Admin Toolkit installation to move in $MigrateFrom (missing, a git working copy, or the folder setup runs from)." }
+    $null
+}
+
+function Move-LegacyToolkit([string] $From) {
+    <# Copies settings, logs and modules from an M365 Admin Toolkit install into $Destination, then removes
+       its program files, shortcuts and uninstall entry so only the new copy starts. User data stays in $From. #>
+    if ($From -ne $Destination) {
+        Write-Host "Moving M365 Admin Toolkit from $From ..."
+        $settings = Join-Path $From 'Config\settings.json'
+        $target = Join-Path $Destination 'Config\settings.json'
+        if ((Test-Path -LiteralPath $settings) -and -not (Test-Path -LiteralPath $target)) {
+            [void](New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force)
+            Copy-Item -LiteralPath $settings -Destination $target
+        }
+        foreach ($folder in 'Logs', 'Modules') { [void](Copy-NewerFile (Join-Path $From $folder) (Join-Path $Destination $folder)) }
+        foreach ($item in $programItems) {
+            $path = Join-Path $From $item
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+        }
+    }
+    if (-not $Portable) {
+        foreach ($path in $legacyShortcuts | Where-Object { Test-ToolkitShortcut -Path $_ -Folder $From }) { Remove-Item -LiteralPath $path -Force }
+        if ((Get-ItemProperty -Path $legacy.Key -ErrorAction SilentlyContinue).InstallLocation -eq $From) { Remove-Item -Path $legacy.Key -Recurse -Force }
     }
 }
 
@@ -228,6 +289,7 @@ function Install-Toolkit {
         Write-Warning 'Running as administrator: the toolkit is installed for the account running this window. Run it without elevation to install it for yourself.'
     }
 
+    $migrateFrom = Find-LegacyToolkit $source
     $upgrade = Test-Path -LiteralPath (Join-Path $Destination 'Start-Toolkit.ps1')
     Write-Host "$(if ($upgrade) { 'Upgrading' } else { 'Installing' }) $appName in $Destination ..."
     if (-not (Test-Path -LiteralPath $Destination)) {
@@ -236,6 +298,8 @@ function Install-Toolkit {
         }
         else { New-PrivateFolder $Destination }
     }
+    # Before the new modules: a module edited in the old copy is newer and is kept.
+    if ($migrateFrom) { Move-LegacyToolkit $migrateFrom }
 
     foreach ($item in $programItems) {
         $from = Join-Path $source $item
@@ -281,23 +345,27 @@ function Install-Toolkit {
         [void](New-ItemProperty -Path $uninstallKey -Name EstimatedSize -Value $sizeKb -PropertyType DWord -Force)
     }
 
+    if ($migrateFrom -and $migrateFrom -ne $Destination) { Write-Host "  Moved settings, logs and modules from $migrateFrom. That folder still holds them - delete it once you have checked the new copy." }
     Write-Host "Done. $(if ($Portable) { "Start it with $Destination\Start-Toolkit.cmd" } else { "Start '$appName' from the Start menu." })"
-    [pscustomobject]@{ Action = if ($upgrade) { 'Upgraded' } else { 'Installed' }; Destination = $Destination; Shortcuts = $created; KeptModuleFiles = $kept }
+    [pscustomobject]@{ Action = if ($upgrade) { 'Upgraded' } else { 'Installed' }; Destination = $Destination; Shortcuts = $created; KeptModuleFiles = $kept; MigratedFrom = $migrateFrom }
 }
 
 function Uninstall-Toolkit {
     Assert-NotWorkingCopy $Destination
     $registered = (Get-ItemProperty -Path $uninstallKey -ErrorAction SilentlyContinue).InstallLocation
-    if (-not (Test-Path -LiteralPath (Join-Path $Destination 'Start-Toolkit.ps1')) -and $registered -ne $Destination) {
+    $registeredLegacy = (Get-ItemProperty -Path $legacy.Key -ErrorAction SilentlyContinue).InstallLocation
+    if (-not (Test-Path -LiteralPath (Join-Path $Destination 'Start-Toolkit.ps1')) -and $Destination -notin $registered, $registeredLegacy) {
         throw "No $appName installation found in $Destination."
     }
     Write-Host "Uninstalling $appName from $Destination ..."
     # Can't delete a folder this window is standing in.
     if ((Get-Location).ProviderPath -like "$Destination*") { Set-Location -LiteralPath $env:TEMP }
 
-    $removed = @($shortcuts.Values | Where-Object { Test-ToolkitShortcut -Path $_ -Folder $Destination })
+    # Shortcuts and the Settings > Apps entry from before the rename count too, when they point here.
+    $removed = @(@($shortcuts.Values) + $legacyShortcuts | Where-Object { Test-ToolkitShortcut -Path $_ -Folder $Destination })
     foreach ($path in $removed) { Remove-Item -LiteralPath $path -Force }
     if ($registered -eq $Destination) { Remove-Item -Path $uninstallKey -Recurse -Force }
+    if ((Get-ItemProperty -Path $legacy.Key -ErrorAction SilentlyContinue).InstallLocation -eq $Destination) { Remove-Item -Path $legacy.Key -Recurse -Force }
 
     $keptData = $false
     if (Test-Path -LiteralPath $Destination) {
@@ -338,6 +406,7 @@ if ($ShowSummary) {
     else {
         $text = "$appName was $($summary.Action.ToLower()) in:`n$Destination"
         if (-not $Portable) { $text += "`n`nOpen it from the Start menu$(if ($DesktopShortcut) { ' or the desktop shortcut' })." }
+        if ($summary.MigratedFrom -and $summary.MigratedFrom -ne $Destination) { $text += "`n`nYour settings, logs and modules were copied from the M365 Admin Toolkit in:`n$($summary.MigratedFrom)`nDelete that folder once you have checked the new copy." }
         if ($summary.KeptModuleFiles.Count) { $text += "`n`n$($summary.KeptModuleFiles.Count) module file(s) were kept because the installed copy is newer." }
         $text += "`n`nStart it now?"
         if ([System.Windows.MessageBox]::Show($text, $appName, 'YesNo', 'Information') -eq 'Yes') {

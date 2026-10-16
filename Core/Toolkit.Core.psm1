@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-    Toolkit.Core - UI-side engine for the M365 Admin Toolkit.
+    Toolkit.Core - UI-side engine for the Admin Toolkit.
 
     Responsibilities:
       * Discover and validate modules (module.json + entry script)
@@ -759,7 +759,9 @@ function Set-TkModuleTag {
 
 function Get-TkPreferencePath {
     # Per user, outside the toolkit folder, so a shared install gives everyone their own favourites.
-    Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'M365AdminToolkit\preferences.json'
+    # -Legacy: where M365 Admin Toolkit kept them before the rename.
+    param([switch] $Legacy)
+    Join-Path ([Environment]::GetFolderPath('ApplicationData')) "$(if ($Legacy) { 'M365AdminToolkit' } else { 'AdminToolkit' })\preferences.json"
 }
 
 function Get-TkPreference {
@@ -767,6 +769,9 @@ function Get-TkPreference {
     # Theme: System follows the Windows app mode; Light or Dark override it.
     # ReadinessView: Percent (73 % with counts) or Rating (Pass/Warn/Fail).
     $preference = [pscustomobject]@{ Favorites = [string[]]@(); GroupBy = 'Category'; Theme = 'System'; ReadinessView = 'Percent' }
+    # Nothing saved since the rename yet: start from the M365 Admin Toolkit preferences. The next save
+    # writes the new file; the old one stays for an older copy.
+    if (-not $PSBoundParameters.ContainsKey('Path') -and -not (Test-Path -LiteralPath $Path)) { $Path = Get-TkPreferencePath -Legacy }
     if (Test-Path -LiteralPath $Path) {
         try {
             $saved = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json

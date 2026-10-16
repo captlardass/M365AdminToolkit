@@ -5,7 +5,7 @@
   "Tags": ["Shared mailbox", "Permissions", "Report"],
   "Description": "Lists shared mailboxes with their Sent Items settings (keep a copy of mail sent as / on behalf of the mailbox) and counts how many users have Full Access, Send As, Send on Behalf and Inbox/Calendar folder permissions. Groups are expanded to their members, so the counts are effective users. Tick 'Detail' for one row per user and permission. Read-only.",
   "Version": "1.0.0",
-  "Author": "M365 Admin Toolkit",
+  "Author": "Admin Toolkit",
   "EntryPoint": "module.ps1",
   "SupportsWhatIf": false,
   "ReadOnly": true,

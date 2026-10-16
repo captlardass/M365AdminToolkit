@@ -4,7 +4,7 @@
   "Category": "Entra ID",
   "Description": "Finds dynamic membership groups whose membership rule uses the memberOf attribute (user.memberof / device.memberof), so they can be rewritten before the attribute is retired. Lists the groups each rule references. Read-only; run it once per tenant and combine the CSVs on the TenantId column.",
   "Version": "1.1.0",
-  "Author": "M365 Admin Toolkit",
+  "Author": "Admin Toolkit",
   "EntryPoint": "module.ps1",
   "SupportsWhatIf": false,
   "ReadOnly": true,

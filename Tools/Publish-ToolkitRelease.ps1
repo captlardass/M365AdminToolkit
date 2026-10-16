@@ -5,13 +5,13 @@
 
 .DESCRIPTION
     Uploads four assets to a new release for the tag v<Version>:
-      M365AdminToolkit-<Version>.zip       Core edition: the program with only the sample modules
-      M365AdminToolkit-<Version>-Full.zip  Full edition: the program with every bundled module
-      M365AdminToolkit-<Version>.SHA256SUMS.txt and Get-M365AdminToolkit.ps1.
+      AdminToolkit-<Version>.zip       Core edition: the program with only the sample modules
+      AdminToolkit-<Version>-Full.zip  Full edition: the program with every bundled module
+      AdminToolkit-<Version>.SHA256SUMS.txt and Get-AdminToolkit.ps1.
     The release notes explain which edition to pick and list the Full modules, read from the
     module.json files inside the Full ZIP, so they always match what ships.
     Before uploading it checks that both ZIPs still match their checksums and that the scripts are
-    validly signed (Get-M365AdminToolkit.ps1 refuses unsigned packages anyway).
+    validly signed (Get-AdminToolkit.ps1 refuses unsigned packages anyway).
     The release is created as a draft, the assets are attached, then it is published, so with
     GitHub's immutable releases turned on nothing can be added or swapped afterwards.
     An existing release is never changed: published versions must not change.
@@ -25,6 +25,12 @@
 .PARAMETER AllowUnsigned
     Publish an unsigned build anyway (users then have to verify it by hand).
 
+.PARAMETER LegacyNames
+    Publishes the one-off bridge release built with New-ToolkitRelease.ps1 -LegacyNames to the old
+    captlardass/M365AdminToolkit repository, with the old asset names, so Get-M365AdminToolkit.ps1
+    copies handed out before the rename still find it. The bootstrap script is uploaded under both
+    names. Publish the same version to the new repository first.
+
 .EXAMPLE
     .\Tools\Publish-ToolkitRelease.ps1 -Version 1.2.0 -WhatIf
 #>
@@ -32,19 +38,22 @@
 param(
     [Parameter(Mandatory)] [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$')] [string] $Version,
     [string] $OutputPath,
-    [switch] $AllowUnsigned
+    [switch] $AllowUnsigned,
+    [switch] $LegacyNames
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 if (-not $OutputPath) { $OutputPath = Join-Path $root 'Release' }
-$repository = 'captlardass/M365AdminToolkit'
+# -LegacyNames: the bridge release for the old repository and the names old bootstrap copies look for.
+$product = if ($LegacyNames) { 'M365AdminToolkit' } else { 'AdminToolkit' }
+$repository = "captlardass/$product"
 $tag = "v$Version"
-$name = "M365AdminToolkit-$Version"
+$name = "$product-$Version"
 $zip = Join-Path $OutputPath "$name.zip"
 $fullZip = Join-Path $OutputPath "$name-Full.zip"
 $sums = Join-Path $OutputPath "$name.SHA256SUMS.txt"
-$bootstrap = Join-Path $OutputPath "$name.Get-M365AdminToolkit.ps1"
+$bootstrap = Join-Path $OutputPath "$name.Get-AdminToolkit.ps1"
 $coreModules = '_Template', 'Demo.SelfTest'
 
 function Get-ZipModule([string] $Path, [string[]] $Exclude) {
@@ -53,7 +62,7 @@ function Get-ZipModule([string] $Path, [string[]] $Exclude) {
     $archive = [IO.Compression.ZipFile]::OpenRead($Path)
     try {
         $manifests = foreach ($entry in $archive.Entries) {
-            if (($entry.FullName -replace '\\', '/') -notmatch '^M365AdminToolkit/Modules/([^/]+)/module\.json$' -or $Matches[1] -in $Exclude) { continue }
+            if (($entry.FullName -replace '\\', '/') -notmatch "^$product/Modules/([^/]+)/module\.json`$" -or $Matches[1] -in $Exclude) { continue }
             $reader = New-Object IO.StreamReader ($entry.Open())
             try { $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
         }
@@ -84,20 +93,24 @@ foreach ($file in $zip, $fullZip) {
 
 $signature = Get-AuthenticodeSignature -LiteralPath $bootstrap
 if ($signature.Status -ne 'Valid') {
-    if (-not $AllowUnsigned) { throw "Get-M365AdminToolkit.ps1 is not validly signed ($($signature.Status)). Build with -CertificateThumbprint, or pass -AllowUnsigned." }
-    Write-Warning 'Publishing an UNSIGNED build: Get-M365AdminToolkit.ps1 will refuse to install it without -AllowUnsigned.'
+    if (-not $AllowUnsigned) { throw "Get-AdminToolkit.ps1 is not validly signed ($($signature.Status)). Build with -CertificateThumbprint, or pass -AllowUnsigned." }
+    Write-Warning 'Publishing an UNSIGNED build: Get-AdminToolkit.ps1 will refuse to install it without -AllowUnsigned.'
 }
 
 gh release view $tag --repo $repository *> $null
 if (-not $LASTEXITCODE) { throw "Release $tag already exists on GitHub. Published versions must not change - use a new version number." }
 
-# Upload under the stable name, so .../releases/latest/download/Get-M365AdminToolkit.ps1 always works.
+# Upload under the stable name, so .../releases/latest/download/Get-AdminToolkit.ps1 always works.
+# The bridge release also carries it as Get-M365AdminToolkit.ps1, the link handed out before the rename.
 $upload = Join-Path ([IO.Path]::GetTempPath()) "TkPublish_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 # -WhatIf:$false: a local scratch folder, needed to preview the notes under -WhatIf too.
 [void](New-Item -ItemType Directory -Path $upload -WhatIf:$false)
 try {
-    $bootstrapAsset = Join-Path $upload 'Get-M365AdminToolkit.ps1'
-    Copy-Item -LiteralPath $bootstrap -Destination $bootstrapAsset -WhatIf:$false
+    $bootstrapAssets = @(foreach ($assetName in @('Get-AdminToolkit.ps1') + @(if ($LegacyNames) { 'Get-M365AdminToolkit.ps1' })) {
+            $asset = Join-Path $upload $assetName
+            Copy-Item -LiteralPath $bootstrap -Destination $asset -WhatIf:$false
+            $asset
+        })
     $modules = @(Get-ZipModule $fullZip -Exclude $coreModules)
     $lines = @(
         '## Which download?', '',
@@ -107,9 +120,12 @@ try {
         '',
         'Both editions have the same program; only the modules differ. Modules you add yourself are kept when you upgrade, whichever edition you install.',
         '', '## Install', '',
-        'Download **Get-M365AdminToolkit.ps1** and run it in a normal (not elevated) PowerShell window. It asks which edition you want, then checks the SHA-256 and the publisher signature before installing for your user account. For scripted installs: `Get-M365AdminToolkit.ps1 -Edition Full -NoGui` (or `-Edition Core`).',
+        'Download **Get-AdminToolkit.ps1** and run it in a normal (not elevated) PowerShell window. It asks which edition you want, then checks the SHA-256 and the publisher signature before installing for your user account. For scripted installs: `Get-AdminToolkit.ps1 -Edition Full -NoGui` (or `-Edition Core`).',
         '', "## Modules in the Full edition", '',
         '| Module | Category | Type | What it does |', '|---|---|---|---|')
+    if ($LegacyNames) {
+        $lines = @('> **M365 Admin Toolkit is now Admin Toolkit.** This is the last release here: installing it moves your copy (settings, logs and modules) to Admin Toolkit. New releases come from https://github.com/captlardass/AdminToolkit.', '') + $lines
+    }
     $lines += foreach ($module in $modules) {
         $type = if ($module.ReadOnly) { 'Read-only' } elseif ($module.SupportsWhatIf) { 'Changes (dry run first)' } else { 'Changes' }
         '| {0} | {1} | {2} | {3} |' -f (Format-Cell $module.Name), (Format-Cell $module.Category), $type, (Format-Cell $module.Description)
@@ -123,11 +139,11 @@ try {
     # A file, not --notes: Windows PowerShell 5.1 mangles double quotes in arguments to native programs.
     $notesFile = Join-Path $upload 'notes.md'
     [IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding $false))
-    $arguments = @('release', 'create', $tag, $zip, $fullZip, $sums, $bootstrapAsset, '--repo', $repository, '--verify-tag', '--draft',
-        '--title', "M365 Admin Toolkit $Version", '--notes-file', $notesFile)
+    $arguments = @('release', 'create', $tag, $zip, $fullZip, $sums) + $bootstrapAssets + @('--repo', $repository, '--verify-tag', '--draft',
+        '--title', "Admin Toolkit $Version", '--notes-file', $notesFile)
     if ($Version -like '*-*') { $arguments += '--prerelease' }
 
-    if ($PSCmdlet.ShouldProcess("$repository $tag", 'Create GitHub release and upload 4 assets (Core and Full)')) {
+    if ($PSCmdlet.ShouldProcess("$repository $tag", "Create GitHub release and upload $(3 + $bootstrapAssets.Count) assets (Core and Full)")) {
         # --verify-tag: the tag must already be pushed, so the release points at the commit that was built.
         & gh @arguments
         if ($LASTEXITCODE) { throw "gh release create failed. A draft may be left on GitHub: check https://github.com/$repository/releases" }

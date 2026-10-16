@@ -1,6 +1,7 @@
-# M365 Admin Toolkit - notes for Claude
+# Admin Toolkit - notes for Claude
 
-Modular WPF GUI (PowerShell 5.1 compatible) that runs Microsoft 365 admin modules.
+Modular WPF GUI (PowerShell 5.1 compatible) that runs admin modules: Microsoft 365 PowerShell modules and local scripts.
+Formerly M365 Admin Toolkit: the old names (M365AdminToolkit) remain only for migration and the one-off bridge release.
 Read README.md for the architecture and the module contract.
 
 ## Adding or changing a module
@@ -27,13 +28,14 @@ Read README.md for the architecture and the module contract.
 
 ## Releases
 - Build with `Tools/New-ToolkitRelease.ps1` only: it packages a tagged commit, signs, then hashes. Order matters - hash after signing.
-- Each release has two editions from the same commit: Core (`M365AdminToolkit-<v>.zip`, only `_Template` + `Demo.SelfTest`) and Full (`M365AdminToolkit-<v>-Full.zip`, every committed module), one SHA256SUMS file with a line per ZIP, and an `EDITION` file in each. Keep the Core ZIP name unchanged: older `Get-M365AdminToolkit.ps1` copies look for it. Don't weaken the tenant-data gate in the build.
-- Publish with `Tools/Publish-ToolkitRelease.ps1` (draft, upload, publish). `Get-M365AdminToolkit.ps1` trusts only its own signer and fails closed: never add a bypass that skips the hash, signature, catalog or zip-slip checks.
+- Each release has two editions from the same commit: Core (`AdminToolkit-<v>.zip`, only `_Template` + `Demo.SelfTest`) and Full (`AdminToolkit-<v>-Full.zip`, every committed module), one SHA256SUMS file with a line per ZIP, and an `EDITION` file in each. Keep the Core ZIP name unchanged: older `Get-AdminToolkit.ps1` copies look for it. `-LegacyNames` (old `M365AdminToolkit` names and repo) is only for the bridge release that moves pre-rename installs; it must never change any check. Don't weaken the tenant-data gate in the build.
+- Publish with `Tools/Publish-ToolkitRelease.ps1` (draft, upload, publish). `Get-AdminToolkit.ps1` trusts only its own signer and fails closed: never add a bypass that skips the hash, signature, catalog or zip-slip checks.
 - Never overwrite or rebuild a published version; bump the version. Never commit certificates, keys or thumbprints.
 
 ## Installer
 - `Install-Toolkit.ps1` keeps a `$programItems` list (replaced on upgrade, removed on uninstall). Add new top-level program files or folders there; anything not listed is treated as user data.
 - Upgrades must never overwrite `Config/settings.json`, `Logs/` or newer module files in the installed copy.
+- Migration from an M365 Admin Toolkit install (`Find-LegacyToolkit` / `Move-LegacyToolkit`) copies user data and only then removes the old program files; it never deletes the old user data and never runs against a git working copy or the folder setup runs from. Test it with `-Portable -MigrateFrom` only.
 - Test it only with `-Portable` into a temp folder (Tests/Installer.Tests.ps1); a normal install writes Start menu shortcuts and an HKCU uninstall key.
 
 ## Code rules
@@ -50,5 +52,5 @@ Read README.md for the architecture and the module contract.
 - Colours: never literals in XAML or code. Use `{DynamicResource Tk.*}` names from `Core/Themes/Light.xaml` + `Dark.xaml` (add new names to both), and `SetResourceReference(...)` instead of assigning brushes in code, so the theme can switch live. Tests/Theme.Tests.ps1 checks this.
 - Built-in WPF templates hard-code light colours: new control types need a themed style in `Core/Styles.xaml`.
 - The WPF Application outlives a launch (relaunching in the same PowerShell session keeps its resources, while the module is re-imported). Find app-level dictionaries by their keys, never by a reference kept in module script state.
-- Personal preferences (favourites, group-by, theme) go in `%APPDATA%\M365AdminToolkit\preferences.json`, never in the toolkit folder.
+- Personal preferences (favourites, group-by, theme) go in `%APPDATA%\AdminToolkit\preferences.json` (read from `%APPDATA%\M365AdminToolkit` until the first save), never in the toolkit folder.
 - Never put real tenant data, UPNs, usernames or secrets in code, manifests, examples or tests - use contoso.example placeholders.

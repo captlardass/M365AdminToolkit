@@ -5,7 +5,7 @@
   "Tags": ["Calendar", "Permissions", "Bulk change"],
   "Description": "Sets the 'Default' (everyone in the organisation) or 'Anonymous' permission on mailboxes' primary calendar - for example LimitedDetails so colleagues see subjects and locations. Not available in the Exchange admin center. Finds the calendar by folder type, so localised names like 'Kalender' work.",
   "Version": "1.0.0",
-  "Author": "M365 Admin Toolkit",
+  "Author": "Admin Toolkit",
   "EntryPoint": "module.ps1",
   "SupportsWhatIf": true,
   "Requires": {

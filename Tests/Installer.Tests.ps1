@@ -7,7 +7,7 @@ function Check([string] $Case, [bool] $Ok, [string] $Detail = '') { $results.Add
 
 $installer = "$Root\Install-Toolkit.ps1"
 $dest = Join-Path ([IO.Path]::GetTempPath()) ("TkInstallTest_{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M365AdminToolkit'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AdminToolkit'
 $registeredBefore = (Get-ItemProperty -Path $uninstallKey -ErrorAction SilentlyContinue).InstallLocation
 function Run([hashtable] $Arguments) { & $installer @Arguments 6>$null | Select-Object -Last 1 }
 
@@ -15,7 +15,7 @@ try {
     $first = Run @{ Destination = $dest; Portable = $true }
     Check 'Fresh install reports Installed' ($first.Action -eq 'Installed') $first.Action
     $expected = 'Core\Toolkit.Core.psm1', 'Core\Toolkit.Worker.ps1', 'Tools\Test-ToolkitModules.ps1', 'Start-Toolkit.ps1', 'Start-Toolkit.cmd',
-        'Install-Toolkit.ps1', 'Install-Toolkit.cmd', 'Get-M365AdminToolkit.ps1', 'Config\settings.example.json', 'Modules\_Template\module.json', 'Modules\Demo.SelfTest\module.ps1'
+        'Install-Toolkit.ps1', 'Install-Toolkit.cmd', 'Get-AdminToolkit.ps1', 'Config\settings.example.json', 'Modules\_Template\module.json', 'Modules\Demo.SelfTest\module.ps1'
     $missing = @($expected | Where-Object { -not (Test-Path (Join-Path $dest $_)) })
     Check 'Program files and modules are copied' (-not $missing.Count) ($missing -join ', ')
     $unwanted = @('Tests', '.git', 'CLAUDE.md', 'Logs' | Where-Object { Test-Path (Join-Path $dest $_) })
@@ -58,8 +58,8 @@ try {
 
     # Unsafe destinations: refused before anything is copied.
     foreach ($case in @(
-            @{ Name = 'a machine-wide folder (Program Files)'; Path = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'M365AdminToolkit' },
-            @{ Name = 'a network path'; Path = '\\fileserver.contoso.example\share\M365AdminToolkit' },
+            @{ Name = 'a machine-wide folder (Program Files)'; Path = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'AdminToolkit' },
+            @{ Name = 'a network path'; Path = '\\fileserver.contoso.example\share\AdminToolkit' },
             @{ Name = 'the root of a drive'; Path = [IO.Path]::GetPathRoot($dest) })) {
         $threw = $false
         try { Run @{ Destination = $case.Path; Portable = $true } | Out-Null } catch { $threw = $true }
@@ -78,10 +78,34 @@ try {
     try { Run @{ Destination = "$shared\Sub"; Portable = $true } | Out-Null } catch { $threw = $true }
     Check 'Refuses a new folder inside one that other users can change' ($threw -and -not (Test-Path "$shared\Sub")) ''
     Remove-Item $shared -Recurse -Force
-    $nested = Run @{ Destination = "$dest-nested\Tools\M365AdminToolkit"; Portable = $true }
+    $nested = Run @{ Destination = "$dest-nested\Tools\AdminToolkit"; Portable = $true }
     $open = @("$dest-nested", "$dest-nested\Tools" | Where-Object { -not (Get-Acl -LiteralPath $_).AreAccessRulesProtected })
     Check 'Missing parent folders are created private too' ($nested.Action -eq 'Installed' -and -not $open.Count) ($open -join ', ')
     Remove-Item "$dest-nested" -Recurse -Force
+
+    # Moving an install from before the rename (M365 Admin Toolkit). -MigrateFrom, so HKCU is never read or touched.
+    $old = "$dest-legacy"
+    Run @{ Destination = $old; Portable = $true } | Out-Null
+    New-Item -ItemType Directory "$old\Logs", "$old\Modules\My.Legacy" -Force | Out-Null
+    Set-Content "$old\Get-M365AdminToolkit.ps1" '# the old bootstrap script'
+    Set-Content "$old\Config\settings.json" 'legacy-settings'
+    Set-Content "$old\Logs\old.log" 'log'
+    Set-Content "$old\Modules\My.Legacy\module.json" '{}'
+    $moved = Run @{ Destination = "$dest-migrated"; Portable = $true; MigrateFrom = $old }
+    Check 'Migration reports where it moved from' ($moved.Action -eq 'Installed' -and $moved.MigratedFrom -eq $old) "$($moved.MigratedFrom)"
+    Check 'Migration copies settings, logs and modules' ((Get-Content "$dest-migrated\Config\settings.json") -eq 'legacy-settings' -and (Test-Path "$dest-migrated\Logs\old.log") -and (Test-Path "$dest-migrated\Modules\My.Legacy\module.json")) ''
+    $leftProgram = @('Start-Toolkit.ps1', 'Core', 'Get-M365AdminToolkit.ps1', 'Get-AdminToolkit.ps1' | Where-Object { Test-Path (Join-Path $old $_) })
+    Check 'Migration removes the old program files, so only the new copy starts' (-not $leftProgram.Count) ($leftProgram -join ', ')
+    Check 'Migration leaves the user data in the old folder' ((Test-Path "$old\Modules\My.Legacy\module.json") -and (Test-Path "$old\Config\settings.json")) ''
+    Check 'Portable migration leaves the uninstall entry alone' ((Get-ItemProperty -Path $uninstallKey -ErrorAction SilentlyContinue).InstallLocation -eq $registeredBefore) ''
+    New-Item -ItemType Directory "$old-git\.git" -Force | Out-Null
+    Set-Content "$old-git\Start-Toolkit.ps1" '# a working copy'
+    $threw = $false
+    try { Run @{ Destination = "$dest-migrated2"; Portable = $true; MigrateFrom = "$old-git" } | Out-Null } catch { $threw = $_.Exception.Message -like '*No M365 Admin Toolkit installation*' }
+    Check 'Refuses to migrate from a git working copy, before copying anything' ($threw -and (Test-Path "$old-git\Start-Toolkit.ps1") -and -not (Test-Path "$dest-migrated2")) ''
+    $threw = $false
+    try { Run @{ Destination = "$dest-migrated2"; Portable = $true; MigrateFrom = "$old-missing" } | Out-Null } catch { $threw = $true }
+    Check 'Refuses to migrate from a folder with no install' ($threw -and -not (Test-Path "$dest-migrated2")) ''
 
     $gone = Run @{ Destination = $dest; Uninstall = $true }
     $left = @('Core', 'Tools', 'Start-Toolkit.ps1', 'Install-Toolkit.ps1', 'Config\settings.example.json' | Where-Object { Test-Path (Join-Path $dest $_) })
@@ -94,7 +118,7 @@ try {
     Check 'Uninstalling a portable copy leaves the uninstall entry alone' ((Get-ItemProperty -Path $uninstallKey -ErrorAction SilentlyContinue).InstallLocation -eq $registeredBefore) ''
 }
 catch { Check 'Installer runs without errors' $false $_.Exception.Message }
-finally { foreach ($dir in $dest, "$dest-shared", "$dest-nested") { if (Test-Path $dir) { Remove-Item $dir -Recurse -Force } } }
+finally { foreach ($dir in $dest, "$dest-shared", "$dest-nested", "$dest-legacy", "$dest-legacy-git", "$dest-migrated", "$dest-migrated2") { if (Test-Path $dir) { Remove-Item $dir -Recurse -Force } } }
 
 $errors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$null, [ref]$errors)

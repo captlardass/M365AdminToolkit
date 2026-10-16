@@ -15,7 +15,7 @@
       3. Optionally sign every .ps1/.psm1 with a code-signing certificate, timestamped so the
          signatures stay valid after the certificate expires. Fails if any signature isn't Valid.
       4. Zip, then hash the final ZIPs into one SHA256SUMS.txt (sha256sum format, a line per ZIP).
-    Also writes a copy of the signed Get-M365AdminToolkit.ps1 next to the ZIPs.
+    Also writes a copy of the signed Get-AdminToolkit.ps1 next to the ZIPs.
     Publish them with Tools\Publish-ToolkitRelease.ps1 (a GitHub release for the tag).
     An existing version is never overwritten: published files must not change.
 
@@ -35,8 +35,14 @@
 .PARAMETER TimestampServer
     RFC 3161 timestamp server used when signing.
 
+.PARAMETER LegacyNames
+    Builds the one-off bridge release for the old M365AdminToolkit repository: the same toolkit, but
+    with the old ZIP names, ZIP root folder and catalog name, so Get-M365AdminToolkit.ps1 copies handed
+    out before the rename can still install it (its installer then migrates to Admin Toolkit).
+    Every check (tenant-data gate, signing, hashing) is the same.
+
 .EXAMPLE
-    git tag -a v1.0.0 -m "M365 Admin Toolkit 1.0.0"
+    git tag -a v1.0.0 -m "Admin Toolkit 1.0.0"
     .\Tools\New-ToolkitRelease.ps1 -Version 1.0.0
 
 .EXAMPLE
@@ -48,19 +54,23 @@ param(
     [string] $Ref,
     [string] $OutputPath,
     [string] $CertificateThumbprint,
-    [string] $TimestampServer = 'http://timestamp.digicert.com'
+    [string] $TimestampServer = 'http://timestamp.digicert.com',
+    [switch] $LegacyNames
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 if (-not $OutputPath) { $OutputPath = Join-Path $root 'Release' }
 if (-not $Ref) { $Ref = "v$Version" }
-$name = "M365AdminToolkit-$Version"
-# Core keeps the original ZIP name, so Get-M365AdminToolkit.ps1 copies from older releases still find it.
+# Package root folder, catalog and ZIP names. -LegacyNames: the pre-rename names that old
+# Get-M365AdminToolkit.ps1 copies look for (the bridge release only).
+$product = if ($LegacyNames) { 'M365AdminToolkit' } else { 'AdminToolkit' }
+$name = "$product-$Version"
+# Core keeps the plain ZIP name, so Get-AdminToolkit.ps1 copies from older releases still find it.
 $zipPaths = [ordered]@{ Core = Join-Path $OutputPath "$name.zip"; Full = Join-Path $OutputPath "$name-Full.zip" }
 $sumsPath = Join-Path $OutputPath "$name.SHA256SUMS.txt"
-# The signed download-and-install script, published on its own as Get-M365AdminToolkit.ps1.
-$bootstrapPath = Join-Path $OutputPath "$name.Get-M365AdminToolkit.ps1"
+# The signed download-and-install script, published on its own as Get-AdminToolkit.ps1.
+$bootstrapPath = Join-Path $OutputPath "$name.Get-AdminToolkit.ps1"
 # In the repository for development only; not part of what users run.
 $devOnly = 'Tests', 'CLAUDE.md', '.gitattributes', '.gitignore'
 # The only modules in the Core edition. Full has every committed module.
@@ -71,7 +81,7 @@ $placeholderDomain = '(^|\.)(contoso\.example|example\.(com|net|org)|[a-z0-9-]+\
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is needed to package a committed version.' }
 $commit = git -C $root rev-parse --verify --quiet "$Ref^{commit}"
 if ($LASTEXITCODE -or -not $commit) {
-    throw "'$Ref' is not a commit or tag. Commit your changes, then tag the release: git tag -a v$Version -m 'M365 Admin Toolkit $Version'"
+    throw "'$Ref' is not a commit or tag. Commit your changes, then tag the release: git tag -a v$Version -m 'Admin Toolkit $Version'"
 }
 if (@(@($zipPaths.Values) + $sumsPath + $bootstrapPath | Where-Object { Test-Path -LiteralPath $_ }).Count) {
     throw "$name already exists in $OutputPath. Published versions must not change - use a new version number."
@@ -117,8 +127,8 @@ function New-EditionZip([string] $Package, [string] $Edition, [string] $ZipPath)
             $signed++
         }
         # Only scripts can carry a signature. A signed catalog covers every file (XAML, JSON...), so
-        # Get-M365AdminToolkit.ps1 can prove the whole package is untouched, with no files added or missing.
-        $catalog = Join-Path $Package 'M365AdminToolkit.cat'
+        # Get-AdminToolkit.ps1 can prove the whole package is untouched, with no files added or missing.
+        $catalog = Join-Path $Package "$product.cat"
         [void](New-FileCatalog -Path $Package -CatalogFilePath $catalog -CatalogVersion 2.0)
         $result = Set-AuthenticodeSignature -LiteralPath $catalog -Certificate $certificate -TimestampServer $TimestampServer -HashAlgorithm SHA256
         if ($result.Status -ne 'Valid') { throw "Signing the file catalog gave status '$($result.Status)': $($result.StatusMessage)" }
@@ -160,7 +170,7 @@ try {
     $signed = 0
     $hashes = [ordered]@{}
     foreach ($edition in $zipPaths.Keys) {
-        $package = Join-Path $staging "$edition\M365AdminToolkit"
+        $package = Join-Path $staging "$edition\$product"
         [void](New-Item -ItemType Directory -Path (Split-Path $package -Parent))
         Copy-Item -LiteralPath $base -Destination $package -Recurse
         if ($edition -eq 'Core') {
@@ -176,7 +186,7 @@ try {
     # sha256sum format ("<hash>  <file>"), so `sha256sum -c` works too.
     $sums = foreach ($edition in $zipPaths.Keys) { "$($hashes[$edition])  $(Split-Path $zipPaths[$edition] -Leaf)`n" }
     [IO.File]::WriteAllText($sumsPath, (-join $sums), (New-Object Text.UTF8Encoding $false))
-    $bootstrap = Join-Path $corePackage 'Get-M365AdminToolkit.ps1'
+    $bootstrap = Join-Path $corePackage 'Get-AdminToolkit.ps1'
     if (Test-Path -LiteralPath $bootstrap) { Copy-Item -LiteralPath $bootstrap -Destination $bootstrapPath }
     else { $bootstrapPath = $null }
 }
@@ -190,7 +200,7 @@ Write-Host "        SHA-256 $($hashes.Core)"
 Write-Host "  Full: $($zipPaths.Full) ($($fullModules.Count) module(s) beyond the samples)"
 Write-Host "        SHA-256 $($hashes.Full)"
 if ($bootstrapPath) { Write-Host "  $bootstrapPath" }
-if (-not $certificate) { Write-Host '  Unsigned: the scripts carry no publisher signature (checksum only). Get-M365AdminToolkit.ps1 refuses unsigned builds.' }
+if (-not $certificate) { Write-Host '  Unsigned: the scripts carry no publisher signature (checksum only). Get-AdminToolkit.ps1 refuses unsigned builds.' }
 [pscustomobject]@{
     Version = $Version; Commit = $commit
     Zip = $zipPaths.Core; Sha256 = $hashes.Core

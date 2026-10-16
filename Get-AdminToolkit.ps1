@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Downloads the M365 Admin Toolkit from its GitHub releases, verifies it and installs it for the
+    Downloads the Admin Toolkit from its GitHub releases, verifies it and installs it for the
     current user.
 
 .DESCRIPTION
@@ -19,7 +19,7 @@
 
 .PARAMETER Destination
     Install folder. Without it, a folder picker opens (or the default
-    %LOCALAPPDATA%\Programs\M365AdminToolkit is used with -NoGui).
+    %LOCALAPPDATA%\Programs\AdminToolkit is used with -NoGui).
 
 .PARAMETER Version
     Install this version (e.g. 1.2.0) instead of the latest release.
@@ -54,10 +54,10 @@
     The SHA256SUMS.txt that belongs to -SourceZip.
 
 .EXAMPLE
-    .\Get-M365AdminToolkit.ps1
+    .\Get-AdminToolkit.ps1
 
 .EXAMPLE
-    .\Get-M365AdminToolkit.ps1 -Edition Full -Destination D:\Tools\M365AdminToolkit -NoGui
+    .\Get-AdminToolkit.ps1 -Edition Full -Destination D:\Tools\AdminToolkit -NoGui
 #>
 [CmdletBinding(DefaultParameterSetName = 'Download')]
 param(
@@ -76,12 +76,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'    # Invoke-WebRequest is very slow in 5.1 with the progress bar
-$appName = 'M365 Admin Toolkit'
+$appName = 'Admin Toolkit'
 # Hard-coded on purpose: the script only ever trusts this repository.
-$repository = 'captlardass/M365AdminToolkit'
+$repository = 'captlardass/AdminToolkit'
 $apiBase = "https://api.github.com/repos/$repository/releases"
 $downloadBase = "https://github.com/$repository/releases/download/"
-$packageRoot = 'M365AdminToolkit'
+$packageRoot = 'AdminToolkit'
 
 function Test-Elevated {
     (New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -103,7 +103,7 @@ function Select-ToolkitEdition {
 
 function Get-ToolkitRelease([string] $Edition) {
     <# Returns the release (tag, ZIP and checksum asset URLs) to install. #>
-    $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'M365AdminToolkit-Installer' }
+    $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'AdminToolkit-Installer' }
     $release = if ($Version) { Invoke-RestMethod -Uri "$apiBase/tags/v$Version" -Headers $headers -UseBasicParsing }
     elseif ($IncludePrerelease) {
         # Assigned first: 5.1 writes a JSON array as one object, so piping the call directly wouldn't enumerate it.
@@ -114,7 +114,7 @@ function Get-ToolkitRelease([string] $Edition) {
     if (-not $release -or $release.draft) { throw "No published release found in $repository." }
     if ($release.tag_name -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw "Unexpected release tag '$($release.tag_name)'." }
     $found = $Matches[1]
-    $name = "M365AdminToolkit-$found"
+    $name = "AdminToolkit-$found"
     # Core keeps the original ZIP name; Full is <name>-Full.zip. One checksum file covers both.
     $zipName = if ($Edition -eq 'Full') { "$name-Full.zip" } else { "$name.zip" }
     $urls = @{}
@@ -146,7 +146,7 @@ function Assert-Checksum([string] $Zip, [string] $Sums) {
 }
 
 function Expand-ToolkitZip([string] $Zip, [string] $Target) {
-    <# Extracts entry by entry. Every entry must stay under <Target>\M365AdminToolkit (no zip slip). #>
+    <# Extracts entry by entry. Every entry must stay under <Target>\AdminToolkit (no zip slip). #>
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $root = [IO.Path]::GetFullPath((Join-Path $Target $packageRoot)).TrimEnd('\') + '\'
     $archive = [IO.Compression.ZipFile]::OpenRead($Zip)
@@ -177,13 +177,13 @@ function Assert-Signature([string] $Folder, [string] $Signer) {
     if ($bad) { throw "Signature check failed - nothing was installed:`n  $(@($bad) -join "`n  ")" }
 
     # The signed catalog covers the other files too (XAML, JSON...) and catches added or missing files.
-    $catalog = Join-Path $Folder 'M365AdminToolkit.cat'
-    if (-not (Test-Path -LiteralPath $catalog)) { throw 'The package has no signed file catalog (M365AdminToolkit.cat) - nothing was installed.' }
+    $catalog = Join-Path $Folder "$packageRoot.cat"
+    if (-not (Test-Path -LiteralPath $catalog)) { throw "The package has no signed file catalog ($packageRoot.cat) - nothing was installed." }
     $signature = Get-AuthenticodeSignature -LiteralPath $catalog
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $Signer) {
         throw "The file catalog is not validly signed by the expected publisher ($($signature.Status)) - nothing was installed."
     }
-    $check = Test-FileCatalog -Path $Folder -CatalogFilePath $catalog -FilesToSkip 'M365AdminToolkit.cat' -Detailed
+    $check = Test-FileCatalog -Path $Folder -CatalogFilePath $catalog -FilesToSkip "$packageRoot.cat" -Detailed
     if ($check.Status -ne 'Valid') { throw 'Files in the package differ from the signed catalog (changed, added or missing) - nothing was installed.' }
     $scripts.Count
 }
@@ -200,7 +200,7 @@ function Install-FromRelease {
         else {
             $own = if ($PSCommandPath) { Get-AuthenticodeSignature -LiteralPath $PSCommandPath }
             if (-not $own -or $own.Status -ne 'Valid') {
-                throw 'This installer script is not validly signed, so it cannot tell which publisher to trust. Download Get-M365AdminToolkit.ps1 again from the Releases page, or pass -ExpectedSigner <thumbprint>.'
+                throw 'This installer script is not validly signed, so it cannot tell which publisher to trust. Download Get-AdminToolkit.ps1 again from the Releases page, or pass -ExpectedSigner <thumbprint>.'
             }
             $signer = $own.SignerCertificate.Thumbprint
         }

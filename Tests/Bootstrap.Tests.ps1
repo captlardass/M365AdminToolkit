@@ -5,7 +5,7 @@ if (-not $Root) { $Root = Split-Path $PSScriptRoot -Parent }
 $results = New-Object System.Collections.Generic.List[object]
 function Check([string] $Case, [bool] $Ok, [string] $Detail = '') { $results.Add([pscustomobject]@{ Result = if ($Ok) { 'PASS' } else { 'FAIL' }; Case = $Case; Detail = $Detail }) }
 
-$script = "$Root\Get-M365AdminToolkit.ps1"
+$script = "$Root\Get-AdminToolkit.ps1"
 $work = Join-Path ([IO.Path]::GetTempPath()) "TkBootstrapTest_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 function Setup([hashtable] $Arguments) { & $script @Arguments -NoGui 6>$null 3>$null | Select-Object -Last 1 }
 function Refusal([hashtable] $Arguments) {
@@ -45,11 +45,11 @@ else {
         Check 'Refuses unsigned or wrongly signed toolkit scripts' ($message -like '*Signature check failed*' -and $message -like '*Install-Toolkit.ps1*' -and $message -notlike '*README.md*' -and -not (Test-Path "$work\signer-dest")) $message
 
         Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-        $evilZip = "$work\evil\M365AdminToolkit-0.0.2-test.zip"
+        $evilZip = "$work\evil\AdminToolkit-0.0.2-test.zip"
         [void](New-Item -ItemType Directory -Path (Split-Path $evilZip))
         $archive = [IO.Compression.ZipFile]::Open($evilZip, 'Create')
         try {
-            foreach ($entryName in 'M365AdminToolkit/Install-Toolkit.ps1', 'M365AdminToolkit/../../evil.txt') {
+            foreach ($entryName in 'AdminToolkit/Install-Toolkit.ps1', 'AdminToolkit/../../evil.txt') {
                 $writer = New-Object IO.StreamWriter ($archive.CreateEntry($entryName).Open())
                 try { $writer.Write('# test') } finally { $writer.Dispose() }
             }
@@ -58,7 +58,7 @@ else {
         $evilSums = "$work\evil\SHA256SUMS.txt"
         [IO.File]::WriteAllText($evilSums, "$((Get-FileHash $evilZip -Algorithm SHA256).Hash.ToLowerInvariant())  $(Split-Path $evilZip -Leaf)`n")
         $message = Refusal @{ SourceZip = $evilZip; ChecksumFile = $evilSums; Destination = "$work\evil-dest"; AllowUnsigned = $true; Portable = $true }
-        Check 'Refuses a ZIP entry outside the package folder (zip slip)' ($message -like '*outside the M365AdminToolkit folder*' -and -not (Test-Path "$work\evil-dest")) $message
+        Check 'Refuses a ZIP entry outside the package folder (zip slip)' ($message -like '*outside the AdminToolkit folder*' -and -not (Test-Path "$work\evil-dest")) $message
 
         $elevated = (New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         if ($elevated) {
@@ -73,7 +73,7 @@ else {
 
 $errors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$errors)
-Check 'Get-M365AdminToolkit.ps1 parses' (-not $errors.Count) (@($errors | ForEach-Object Message) -join '; ')
+Check 'Get-AdminToolkit.ps1 parses' (-not $errors.Count) (@($errors | ForEach-Object Message) -join '; ')
 
 $results | Format-Table -AutoSize -Wrap | Out-String -Width 200
 "{0} passed, {1} failed" -f @($results | Where-Object Result -eq 'PASS').Count, @($results | Where-Object Result -eq 'FAIL').Count

@@ -8,7 +8,7 @@
              ],
     "Description":  "Lists licensed users that hold Entra ID directory roles (privileged only, or all), including PIM eligible assignments and roles granted through role-assignable groups. Read-only. Eligible assignments need Entra ID P2.",
     "Version":  "1.0.0",
-    "Author":  "M365 Admin Toolkit",
+    "Author":  "Admin Toolkit",
     "EntryPoint":  "module.ps1",
     "SupportsWhatIf":  false,
     "ReadOnly":  true,

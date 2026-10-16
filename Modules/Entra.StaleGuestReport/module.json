@@ -5,7 +5,7 @@
   "Tags": ["Guests", "Security", "Report", "Clean-up"],
   "Description": "Lists guest accounts with no interactive or non-interactive sign-in within the chosen number of days, including guests that never redeemed their invitation. Read-only. Needs Entra ID P1 or higher for sign-in activity.",
   "Version": "1.1.0",
-  "Author": "M365 Admin Toolkit",
+  "Author": "Admin Toolkit",
   "EntryPoint": "module.ps1",
   "SupportsWhatIf": false,
   "ReadOnly": true,

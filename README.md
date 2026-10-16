@@ -1,4 +1,4 @@
-# M365 Admin Toolkit
+# Admin Toolkit
 
 A desktop GUI for Microsoft 365 administrators who want **one place to run their PowerShell scripts**,
 without a console, without remembering parameters and without worrying about pressing Enter too early.
@@ -52,24 +52,24 @@ input form, a results grid, CSV export and a safe dry run.
 
    | Edition | Release file | Pick it when |
    |---|---|---|
-   | **Full** | `M365AdminToolkit-<version>-Full.zip` | You want to start straight away with the ready-made modules (see [Included modules](#included-modules)) |
-   | **Core** | `M365AdminToolkit-<version>.zip` | You want a clean toolkit and will add your own modules: only the module template and a self-test |
+   | **Full** | `AdminToolkit-<version>-Full.zip` | You want to start straight away with the ready-made modules (see [Included modules](#included-modules)) |
+   | **Core** | `AdminToolkit-<version>.zip` | You want a clean toolkit and will add your own modules: only the module template and a self-test |
 
    You can switch later: install the other edition over the top. Modules you added yourself are always kept.
    The edition you have is shown in the tooltip on the version number in the toolkit window.
 
-2. **Download and install it.** Download **`Get-M365AdminToolkit.ps1`** from the latest
-   [release](https://github.com/captlardass/M365AdminToolkit/releases/latest), then run it in a normal PowerShell
+2. **Download and install it.** Download **`Get-AdminToolkit.ps1`** from the latest
+   [release](https://github.com/captlardass/AdminToolkit/releases/latest), then run it in a normal PowerShell
    window. Don't use *Run as administrator*. It asks which edition you want:
 
    ```powershell
-   powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$env:USERPROFILE\Downloads\Get-M365AdminToolkit.ps1"
+   powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$env:USERPROFILE\Downloads\Get-AdminToolkit.ps1"
    ```
 
    It asks where to install, downloads the edition you chose, then checks it before anything runs:
    - the ZIP's SHA-256 must match the release's checksum file
    - every script and the file catalog that covers all other files must carry a valid signature from the same
-     publisher that signed `Get-M365AdminToolkit.ps1`
+     publisher that signed `Get-AdminToolkit.ps1`
    - no file in the ZIP may point outside the package folder
 
    If any check fails, it stops and installs nothing. Options: `-Edition Full` or `-Edition Core` (skips the
@@ -80,8 +80,8 @@ input form, a results grid, CSV export and a safe dry run.
    [Checking a download](#checking-a-download)), extract it and double-click **`Install-Toolkit.cmd`**.
 
 3. **What the installer does.** No admin rights are needed, and nothing is written machine-wide. The installer:
-   - copies the toolkit to the folder you choose (default `%LOCALAPPDATA%\Programs\M365AdminToolkit`) and unblocks the files
-   - adds **M365 Admin Toolkit** to the Start menu and the desktop
+   - copies the toolkit to the folder you choose (default `%LOCALAPPDATA%\Programs\AdminToolkit`) and unblocks the files
+   - adds **Admin Toolkit** to the Start menu and the desktop
    - adds an uninstall entry under *Settings > Apps* (for your account only)
 
    The install folder must be private to you. Network paths, system folders such as `Program Files`, and
@@ -92,9 +92,16 @@ input form, a results grid, CSV export and a safe dry run.
 
    ```powershell
    .\Install-Toolkit.ps1                                   # Start menu shortcut only
-   .\Install-Toolkit.ps1 -DesktopShortcut -Destination D:\Tools\M365AdminToolkit
-   .\Install-Toolkit.ps1 -Portable -Destination E:\M365AdminToolkit   # files only, e.g. on a USB stick
+   .\Install-Toolkit.ps1 -DesktopShortcut -Destination D:\Tools\AdminToolkit
+   .\Install-Toolkit.ps1 -Portable -Destination E:\AdminToolkit   # files only, e.g. on a USB stick
    ```
+
+   **Coming from M365 Admin Toolkit?** The toolkit was renamed. The installer finds the old install (its
+   *Settings > Apps* entry, or `%LOCALAPPDATA%\Programs\M365AdminToolkit`), copies its settings, logs and
+   modules into the new folder, and removes its program files, shortcuts and uninstall entry, so only the new
+   copy starts. The old folder keeps your data until you delete it. Point it at another old copy with
+   `-MigrateFrom <folder>`. Favourites and other preferences are picked up from
+   `%APPDATA%\M365AdminToolkit` the first time.
 
    **To upgrade**, run the installer again from a newer copy. Core files are replaced. Modules you created or
    edited in the installed copy are kept, and so are `Config\settings.json` and the logs.
@@ -118,7 +125,7 @@ input form, a results grid, CSV export and a safe dry run.
 
 ## Running the toolkit
 
-Open **M365 Admin Toolkit** from the Start menu if you installed it. Otherwise double-click
+Open **Admin Toolkit** from the Start menu if you installed it. Otherwise double-click
 **`Start-Toolkit.cmd`**, or start it from PowerShell:
 
 ```powershell
@@ -430,18 +437,18 @@ Only certificate authentication is supported. Client secrets are deliberately no
 
 ### Checking a download
 
-`Get-M365AdminToolkit.ps1` does all of the checks below for you. To check a download by hand instead: each
-release has one `M365AdminToolkit-<version>.SHA256SUMS.txt` file with a line for each edition's ZIP. Before you
+`Get-AdminToolkit.ps1` does all of the checks below for you. To check a download by hand instead: each
+release has one `AdminToolkit-<version>.SHA256SUMS.txt` file with a line for each edition's ZIP. Before you
 install, check that the ZIP is the one that was published:
 
 ```powershell
-(Get-FileHash .\M365AdminToolkit-1.0.0-Full.zip -Algorithm SHA256).Hash   # must match its line in SHA256SUMS.txt (case doesn't matter)
+(Get-FileHash .\AdminToolkit-1.0.0-Full.zip -Algorithm SHA256).Hash   # must match its line in SHA256SUMS.txt (case doesn't matter)
 ```
 
 If the scripts are signed, also check who signed them after extracting:
 
 ```powershell
-Get-AuthenticodeSignature .\M365AdminToolkit\Start-Toolkit.ps1 | Format-List Status, SignerCertificate
+Get-AuthenticodeSignature .\AdminToolkit\Start-Toolkit.ps1 | Format-List Status, SignerCertificate
 ```
 
 `Status` must be `Valid`. A checksum proves the file hasn't changed. Only a signature proves who published it.
@@ -453,7 +460,7 @@ Get-AuthenticodeSignature .\M365AdminToolkit\Start-Toolkit.ps1 | Format-List Sta
    click *Push origin* (it pushes the tag too). Or from the command line:
 
    ```powershell
-   git tag -a v1.0.0 -m "M365 Admin Toolkit 1.0.0"
+   git tag -a v1.0.0 -m "Admin Toolkit 1.0.0"
    git push origin v1.0.0
    ```
 
@@ -466,17 +473,17 @@ Get-AuthenticodeSignature .\M365AdminToolkit\Start-Toolkit.ps1 | Format-List Sta
    ```
 
    The script packages exactly the tagged commit. Local changes, tests and git-ignored (private) modules are
-   never included. From it, it builds the **Core** edition (`M365AdminToolkit-<version>.zip`, sample modules
-   only, the same file name as before the split, so older copies of `Get-M365AdminToolkit.ps1` still work) and
-   the **Full** edition (`M365AdminToolkit-<version>-Full.zip`, every committed module). Each has an `EDITION`
+   never included. From it, it builds the **Core** edition (`AdminToolkit-<version>.zip`, sample modules
+   only, the same file name as before the split, so older copies of `Get-AdminToolkit.ps1` still work) and
+   the **Full** edition (`AdminToolkit-<version>-Full.zip`, every committed module). Each has an `EDITION`
    file. The build stops if a shipped file contains an e-mail address or tenant name that isn't a placeholder. It signs the scripts with a timestamp, so the signatures stay valid after the certificate
    expires. Then it zips each edition and writes the SHA-256 of both final ZIPs into one checksum file, so the
    checksums cover the signed files. It never overwrites a version that has already been built. When signing, it also writes a signed
-   file catalog (`M365AdminToolkit.cat`) that covers the files a signature can't (XAML, JSON). It also puts a
-   copy of the signed `Get-M365AdminToolkit.ps1` next to the ZIP.
+   file catalog (`AdminToolkit.cat`) that covers the files a signature can't (XAML, JSON). It also puts a
+   copy of the signed `Get-AdminToolkit.ps1` next to the ZIP.
 
 3. Publish it with the GitHub CLI (`gh auth login` first). This creates the release for the pushed tag as a
-   draft, uploads both ZIPs, the checksum file and `Get-M365AdminToolkit.ps1`, then publishes it. The release
+   draft, uploads both ZIPs, the checksum file and `Get-AdminToolkit.ps1`, then publishes it. The release
    notes explain which edition to pick and list the Full modules from their `module.json`, so they always match
    what ships (`-WhatIf` shows them). It refuses an existing release, a ZIP that no longer matches its checksum
    and an unsigned build:
@@ -486,11 +493,22 @@ Get-AuthenticodeSignature .\M365AdminToolkit\Start-Toolkit.ps1 | Format-List Sta
    .\Tools\Publish-ToolkitRelease.ps1 -Version 1.0.0
    ```
 
+   **Once, after the rename: the bridge release.** Copies of `Get-M365AdminToolkit.ps1` handed out before the
+   rename only trust the old `captlardass/M365AdminToolkit` repository and its old file names. Publish the
+   first Admin Toolkit version to the new repository as above, then build and publish the same version to the
+   old repository with the old names. Its installer moves existing installs to Admin Toolkit. Then archive
+   the old repository.
+
+   ```powershell
+   .\Tools\New-ToolkitRelease.ps1 -Version 2.0.0 -CertificateThumbprint <thumbprint> -LegacyNames -OutputPath .\Release\Legacy
+   .\Tools\Publish-ToolkitRelease.ps1 -Version 2.0.0 -LegacyNames -OutputPath .\Release\Legacy -WhatIf
+   ```
+
    Turn on **release immutability** once for the repository (*Settings > General > Releases*), so the tag
    and the assets of a published release can't be changed or swapped later.
 
-`Get-M365AdminToolkit.ps1` trusts only the certificate that signed it, so every release must be signed with
-the same certificate. If you change certificates, users need the new `Get-M365AdminToolkit.ps1` once.
+`Get-AdminToolkit.ps1` trusts only the certificate that signed it, so every release must be signed with
+the same certificate. If you change certificates, users need the new `Get-AdminToolkit.ps1` once.
 
 You need a code-signing certificate to sign. Use your organisation's internal PKI for internal use, or a
 public CA or Azure Trusted Signing for public releases. Don't use a self-signed certificate: other PCs won't
@@ -528,7 +546,7 @@ directly.
   processes or by .NET web clients. The GUI tells you when a module does something it can't guard.
 - **Privacy.** The log file in `Logs\` records which module ran and *which* inputs were supplied, never the
   values. Personal preferences such as favourites and grouping are stored in
-  `%APPDATA%\M365AdminToolkit\preferences.json`, not in the toolkit folder.
+  `%APPDATA%\AdminToolkit\preferences.json`, not in the toolkit folder.
 
 ## Troubleshooting
 

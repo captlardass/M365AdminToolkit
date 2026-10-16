@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    M365 Admin Toolkit - a modular WPF front-end for Microsoft 365 PowerShell tasks.
+    Admin Toolkit - a modular WPF front-end for admin tasks: Microsoft 365 modules and local scripts.
 
 .DESCRIPTION
     Discovers modules under .\Modules, renders a form for the selected one from its
@@ -1196,10 +1196,10 @@ $ui.ExportLogButton.Add_Click({
     if (-not $text.Trim()) { Write-UiLog 'INFO' 'The log is empty - nothing to export.'; return }
     $dialog = New-Object Microsoft.Win32.SaveFileDialog
     $dialog.Filter = 'Text file (*.txt)|*.txt|All files (*.*)|*.*'
-    $dialog.FileName = 'M365AdminToolkit-log_{0:yyyyMMdd-HHmm}.txt' -f (Get-Date)
+    $dialog.FileName = 'AdminToolkit-log_{0:yyyyMMdd-HHmm}.txt' -f (Get-Date)
     if (-not $dialog.ShowDialog($ui.Window)) { return }
     try {
-        $header = 'M365 Admin Toolkit {0} - log exported {1:yyyy-MM-dd HH:mm:ss}' -f $toolkitVersion, (Get-Date)
+        $header = 'Admin Toolkit {0} - log exported {1:yyyy-MM-dd HH:mm:ss}' -f $toolkitVersion, (Get-Date)
         # The on-screen log, as shown (it can name users or mailboxes, unlike the file in Logs\).
         [System.IO.File]::WriteAllText($dialog.FileName, $header + [Environment]::NewLine + [Environment]::NewLine + $text, [System.Text.UTF8Encoding]::new($true))
         Write-UiLog 'INFO' "Exported the log to $($dialog.FileName)"

@@ -16,11 +16,11 @@ else {
     try {
         $release = Build @{ Version = '0.0.1-test'; Ref = 'HEAD'; OutputPath = $out }
         Check 'Builds a Core ZIP, a Full ZIP and a checksum file' ((Test-Path $release.Zip) -and (Test-Path $release.FullZip) -and (Test-Path $release.ChecksumFile)) "$($release.Zip)"
-        Check 'Core keeps the original ZIP name' ((Split-Path $release.Zip -Leaf) -eq 'M365AdminToolkit-0.0.1-test.zip' -and (Split-Path $release.FullZip -Leaf) -eq 'M365AdminToolkit-0.0.1-test-Full.zip') ''
+        Check 'Core keeps the original ZIP name' ((Split-Path $release.Zip -Leaf) -eq 'AdminToolkit-0.0.1-test.zip' -and (Split-Path $release.FullZip -Leaf) -eq 'AdminToolkit-0.0.1-test-Full.zip') ''
         $coreHash = (Get-FileHash $release.Zip -Algorithm SHA256).Hash.ToLowerInvariant()
         $fullHash = (Get-FileHash $release.FullZip -Algorithm SHA256).Hash.ToLowerInvariant()
         $line = [IO.File]::ReadAllText($release.ChecksumFile)
-        Check 'Checksum file matches both ZIPs (sha256sum format)' ($line -eq "$coreHash  M365AdminToolkit-0.0.1-test.zip`n$fullHash  M365AdminToolkit-0.0.1-test-Full.zip`n") $line.Trim()
+        Check 'Checksum file matches both ZIPs (sha256sum format)' ($line -eq "$coreHash  AdminToolkit-0.0.1-test.zip`n$fullHash  AdminToolkit-0.0.1-test-Full.zip`n") $line.Trim()
 
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         function Get-Entry([string] $Path) {
@@ -31,19 +31,19 @@ else {
             $zip = [IO.Compression.ZipFile]::OpenRead($Path)
             try {
                 # .NET Framework's CreateFromDirectory writes '\' in entry names.
-                $entry = $zip.Entries | Where-Object { ($_.FullName -replace '\\', '/') -eq 'M365AdminToolkit/EDITION' } | Select-Object -First 1
+                $entry = $zip.Entries | Where-Object { ($_.FullName -replace '\\', '/') -eq 'AdminToolkit/EDITION' } | Select-Object -First 1
                 if (-not $entry) { return $null }
                 $reader = New-Object IO.StreamReader ($entry.Open())
                 try { $reader.ReadToEnd().Trim() } finally { $reader.Dispose() }
             }
             finally { $zip.Dispose() }
         }
-        function Get-ZipModuleId([string[]] $Entries) { @($Entries | Where-Object { $_ -match '^M365AdminToolkit/Modules/([^/]+)/' } | ForEach-Object { $_.Split('/')[2] } | Sort-Object -Unique) }
+        function Get-ZipModuleId([string[]] $Entries) { @($Entries | Where-Object { $_ -match '^AdminToolkit/Modules/([^/]+)/' } | ForEach-Object { $_.Split('/')[2] } | Sort-Object -Unique) }
         $entries = Get-Entry $release.Zip
         $fullEntries = Get-Entry $release.FullZip
-        Check 'Package has the toolkit and a VERSION file' (($entries -contains 'M365AdminToolkit/Start-Toolkit.ps1') -and ($entries -contains 'M365AdminToolkit/VERSION') -and ($entries -contains 'M365AdminToolkit/Core/Toolkit.Core.psm1')) ''
+        Check 'Package has the toolkit and a VERSION file' (($entries -contains 'AdminToolkit/Start-Toolkit.ps1') -and ($entries -contains 'AdminToolkit/VERSION') -and ($entries -contains 'AdminToolkit/Core/Toolkit.Core.psm1')) ''
         Check 'Each ZIP names its edition' ((Get-Edition $release.Zip) -eq 'Core' -and (Get-Edition $release.FullZip) -eq 'Full') ''
-        $devFiles = @(@($entries) + @($fullEntries) | Where-Object { $_ -like 'M365AdminToolkit/Tests/*' -or $_ -in 'M365AdminToolkit/CLAUDE.md', 'M365AdminToolkit/.gitignore', 'M365AdminToolkit/.gitattributes' })
+        $devFiles = @(@($entries) + @($fullEntries) | Where-Object { $_ -like 'AdminToolkit/Tests/*' -or $_ -in 'AdminToolkit/CLAUDE.md', 'AdminToolkit/.gitignore', 'AdminToolkit/.gitattributes' })
         Check 'Tests and development notes are left out' (-not $devFiles.Count) ($devFiles -join ', ')
         $modules = Get-ZipModuleId $entries
         $private = @($modules | Where-Object { $_ -notin '_Template', 'Demo.SelfTest' })
@@ -53,12 +53,19 @@ else {
                 git -C $Root check-ignore -q --no-index "Modules/$_/module.json"; [bool]$LASTEXITCODE } | Sort-Object)
         $fullModules = Get-ZipModuleId $fullEntries
         Check 'Full ships every committed, shared module' (-not (Compare-Object $committed $fullModules)) "modules: $($fullModules -join ', ')"
-        $program = { param($list) @($list | Where-Object { $_ -notlike 'M365AdminToolkit/Modules/*' -and $_ -ne 'M365AdminToolkit/EDITION' } | Sort-Object) }
+        $program = { param($list) @($list | Where-Object { $_ -notlike 'AdminToolkit/Modules/*' -and $_ -ne 'AdminToolkit/EDITION' } | Sort-Object) }
         Check 'Both editions have the same program files' (-not (Compare-Object (& $program $entries) (& $program $fullEntries))) ''
         Check 'Unsigned build signs nothing' ($release.SignedFiles -eq 0) ''
-        git -C $Root cat-file -e 'HEAD:Get-M365AdminToolkit.ps1' 2>$null
+        git -C $Root cat-file -e 'HEAD:Get-AdminToolkit.ps1' 2>$null
         if ($LASTEXITCODE) { Check 'Download script ships next to the ZIP' $true 'skipped: not committed yet' }
-        else { Check 'Download script ships next to the ZIP' ($release.Bootstrap -and (Test-Path $release.Bootstrap) -and $entries -contains 'M365AdminToolkit/Get-M365AdminToolkit.ps1') "$($release.Bootstrap)" }
+        else { Check 'Download script ships next to the ZIP' ($release.Bootstrap -and (Test-Path $release.Bootstrap) -and $entries -contains 'AdminToolkit/Get-AdminToolkit.ps1') "$($release.Bootstrap)" }
+
+        # The bridge release for the old repository: old names, so Get-M365AdminToolkit.ps1 copies still find it.
+        $bridge = Build @{ Version = '0.0.3-test'; Ref = 'HEAD'; OutputPath = $out; LegacyNames = $true }
+        $bridgeEntries = Get-Entry $bridge.Zip
+        Check '-LegacyNames builds the old ZIP names and checksum file' ((Split-Path $bridge.Zip -Leaf) -eq 'M365AdminToolkit-0.0.3-test.zip' -and (Split-Path $bridge.FullZip -Leaf) -eq 'M365AdminToolkit-0.0.3-test-Full.zip' -and (Split-Path $bridge.ChecksumFile -Leaf) -eq 'M365AdminToolkit-0.0.3-test.SHA256SUMS.txt') ''
+        $outside = @($bridgeEntries | Where-Object { $_ -notlike 'M365AdminToolkit/*' })
+        Check '-LegacyNames uses the old ZIP root folder, with the same program' (-not $outside.Count -and $bridgeEntries -contains 'M365AdminToolkit/Install-Toolkit.ps1' -and $bridgeEntries -contains 'M365AdminToolkit/Get-AdminToolkit.ps1') ($outside -join ', ')
 
         $threw = $false
         try { Build @{ Version = '0.0.1-test'; Ref = 'HEAD'; OutputPath = $out } | Out-Null } catch { $threw = $true }
@@ -68,7 +75,7 @@ else {
         Check 'Without -Ref, needs the tag v<Version>' $threw ''
         $threw = $false
         try { Build @{ Version = '0.0.2-test'; Ref = 'HEAD'; OutputPath = $out; CertificateThumbprint = '0000000000000000000000000000000000000000' } | Out-Null } catch { $threw = $true }
-        Check 'Unknown signing certificate stops the build' ($threw -and -not (Test-Path (Join-Path $out 'M365AdminToolkit-0.0.2-test.zip'))) ''
+        Check 'Unknown signing certificate stops the build' ($threw -and -not (Test-Path (Join-Path $out 'AdminToolkit-0.0.2-test.zip'))) ''
         $threw = $false
         try { Build @{ Version = '1.0'; Ref = 'HEAD'; OutputPath = $out } | Out-Null } catch { $threw = $true }
         Check 'Version must be semantic (x.y.z)' $threw ''
